@@ -1,26 +1,131 @@
+"""Modelos SQLAlchemy.
+
+Regra que vale para o schema inteiro: **nada em texto puro que seja segredo.**
+Toda coluna que guarda segredo é `LargeBinary` e recebe um blob de
+`vault.core.crypto`. Metadado que não é segredo (nome do serviço, login, URL)
+fica legível de propósito — é o que permite listar e buscar sem pedir a senha
+mestra a cada tecla.
+
+Decisão sobre `service_name`/`login` legíveis: é uma troca consciente. Cifrá-los
+também esconderia mais de quem tem acesso direto ao banco, mas tornaria a busca
+(Fase 8) impossível sem baixar e decifrar a tabela inteira. Está registrado nas
+"Limitações conhecidas" do README em vez de ficar implícito.
+"""
+
+from __future__ import annotations
+
 from datetime import datetime
 
-from sqlalchemy import LargeBinary, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Index,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from vault.db.base import Base
 
+#: Único id permitido na tabela de configuração. Ver `VaultConfig`.
+VAULT_CONFIG_ID = 1
+
 
 class VaultConfig(Base):
+    """Configuração do vault. A tabela tem, no máximo, **uma** linha.
+
+    A unicidade é imposta pelo banco (`CHECK (id = 1)`), não pela aplicação. A
+    versão anterior lia essa linha com `scalar_one()`, que estoura com
+    `MultipleResultsFound` se por qualquer caminho aparecer uma segunda —
+    duas execuções concorrentes de `create_vault`, um restore parcial, um insert
+    manual. Restrição no schema resolve na origem: a segunda linha simplesmente
+    não entra.
+    """
+
     __tablename__ = "vault_config"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    master_password_hash: Mapped[str]
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_vault_config_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+
+    master_password_hash: Mapped[str] = mapped_column(String(255))
+    """Hash Argon2id da senha mestra (formato PHC, com salt próprio embutido)."""
+
     salt: Mapped[bytes] = mapped_column(LargeBinary)
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    """Salt do KDF da chave de criptografia. Diferente do salt do hash acima."""
+
+    kdf_algorithm: Mapped[str] = mapped_column(
+        String(32), server_default="argon2id", default="argon2id"
+    )
+    kdf_time_cost: Mapped[int] = mapped_column(server_default="3", default=3)
+    kdf_memory_cost: Mapped[int] = mapped_column(server_default="65536", default=65536)
+    kdf_parallelism: Mapped[int] = mapped_column(server_default="4", default=4)
+    kdf_hash_len: Mapped[int] = mapped_column(server_default="32", default=32)
+    """Parâmetros usados para derivar a chave DESTE vault. Ver `vault.core.kdf`."""
+
+    key_check: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    """Sentinela cifrada: prova que a chave derivada abre este vault."""
+
+    totp_secret_encrypted: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True
+    )
+    """Segredo TOTP do segundo fator da senha mestra (Fase 10). Cifrado."""
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    @property
+    def totp_enabled(self) -> bool:
+        return self.totp_secret_encrypted is not None
+
+    def __repr__(self) -> str:  # pragma: no cover - conveniência de debug
+        return f"<VaultConfig id={self.id} kdf={self.kdf_algorithm} totp={self.totp_enabled}>"
 
 
 class Credential(Base):
+    """Uma credencial guardada.
+
+    `UniqueConstraint(service_name, login)` existe para que "salvar de novo o
+    mesmo login do mesmo serviço" seja um erro explícito em vez de gerar duas
+    linhas silenciosamente divergentes — o jeito clássico de o usuário acabar com
+    duas senhas para o mesmo site e não saber qual vale.
+    """
+
     __tablename__ = "credentials"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    service_name: Mapped[str]
-    login: Mapped[str]
-    encrypted_password: Mapped[bytes] = mapped_column(LargeBinary)
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        server_default=func.now(), onupdate=func.now()
+    __table_args__ = (
+        UniqueConstraint("service_name", "login", name="uq_credentials_service_login"),
+        Index("ix_credentials_service_name", "service_name"),
     )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    service_name: Mapped[str] = mapped_column(String(255))
+    login: Mapped[str] = mapped_column(String(255))
+    url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
+    encrypted_password: Mapped[bytes] = mapped_column(LargeBinary)
+    encrypted_notes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    encrypted_totp_secret: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    @property
+    def has_totp(self) -> bool:
+        return self.encrypted_totp_secret is not None
+
+    def __repr__(self) -> str:  # pragma: no cover - conveniência de debug
+        return f"<Credential id={self.id} service={self.service_name!r} login={self.login!r}>"
