@@ -35,9 +35,7 @@ def banco_descartavel() -> str:
 
     url = make_url(TEST_DATABASE_URL)
     nome = f"sv_mig_{uuid.uuid4().hex[:12]}"
-    admin = sa.create_engine(
-        url.set(database="postgres"), isolation_level="AUTOCOMMIT"
-    )
+    admin = sa.create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
 
     with admin.connect() as conn:
         conn.execute(text(f'CREATE DATABASE "{nome}"'))
@@ -83,12 +81,8 @@ def test_upgrade_do_zero_cria_o_schema_completo(banco_descartavel: str) -> None:
     colunas_cred = {c["name"] for c in inspetor.get_columns("credentials")}
     assert colunas_cred == {
         "id",
-        "service_name",
-        "login",
-        "url",
-        "encrypted_password",
-        "encrypted_notes",
-        "encrypted_totp_secret",
+        "encrypted_data",
+        "deleted_at",
         "created_at",
         "updated_at",
     }
@@ -128,7 +122,12 @@ def test_check_impede_um_segundo_vault(banco_descartavel: str) -> None:
 
 
 def test_unique_impede_credencial_duplicada(banco_descartavel: str) -> None:
-    upgrade_to_head(banco_descartavel)
+    from alembic import command
+
+    from vault.db.migrate import alembic_config
+
+    config = alembic_config(banco_descartavel)
+    command.upgrade(config, "b1c7d3e59f20")
     motor = sa.create_engine(banco_descartavel)
 
     inserir = text(
@@ -161,8 +160,7 @@ def test_migration_preserva_dados_de_um_vault_antigo(banco_descartavel: str) -> 
     with motor.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO vault_config (id, master_password_hash, salt) "
-                "VALUES (7, :hash, :salt)"
+                "INSERT INTO vault_config (id, master_password_hash, salt) VALUES (7, :hash, :salt)"
             ),
             {"hash": "$argon2id$v=19$m=65536,t=3,p=4$abc$def", "salt": b"0123456789abcdef"},
         )
@@ -174,7 +172,7 @@ def test_migration_preserva_dados_de_um_vault_antigo(banco_descartavel: str) -> 
             {"blob": b"\x01blob-cifrado-antigo"},
         )
 
-    upgrade_to_head(banco_descartavel)
+    command.upgrade(config, "b1c7d3e59f20")
 
     with motor.connect() as conn:
         linha = conn.execute(
@@ -223,9 +221,7 @@ def test_ciclo_upgrade_downgrade_upgrade(banco_descartavel: str) -> None:
     upgrade_to_head(banco_descartavel)
 
     motor = sa.create_engine(banco_descartavel)
-    assert "kdf_algorithm" in {
-        c["name"] for c in inspect(motor).get_columns("vault_config")
-    }
+    assert "kdf_algorithm" in {c["name"] for c in inspect(motor).get_columns("vault_config")}
     motor.dispose()
 
 
@@ -268,9 +264,7 @@ def test_downgrade_recusa_rodar_com_vault_existente(banco_descartavel: str) -> N
 
     # E o vault continua intacto, com os parâmetros dele.
     with motor.connect() as conn:
-        linha = conn.execute(
-            text("SELECT kdf_time_cost, kdf_memory_cost FROM vault_config")
-        ).one()
+        linha = conn.execute(text("SELECT kdf_time_cost, kdf_memory_cost FROM vault_config")).one()
         assert (linha.kdf_time_cost, linha.kdf_memory_cost) == (5, 16384)
     motor.dispose()
 
@@ -331,10 +325,7 @@ def test_upgrade_recusa_escolher_entre_dois_vault_config(banco_descartavel: str)
     with motor.begin() as conn:
         for salt in (b"salt-da-linha-1", b"salt-da-linha-2"):
             conn.execute(
-                text(
-                    "INSERT INTO vault_config (master_password_hash, salt) "
-                    "VALUES ('h', :s)"
-                ),
+                text("INSERT INTO vault_config (master_password_hash, salt) VALUES ('h', :s)"),
                 {"s": salt},
             )
 

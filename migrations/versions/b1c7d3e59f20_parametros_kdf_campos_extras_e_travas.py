@@ -131,7 +131,11 @@ def upgrade() -> None:
         ),
     )
     op.execute("UPDATE vault_config SET id = 1")
-    op.create_check_constraint("ck_vault_config_singleton", "vault_config", "id = 1")
+    if _is_postgres():
+        op.create_check_constraint("ck_vault_config_singleton", "vault_config", "id = 1")
+    else:
+        with op.batch_alter_table("vault_config") as batch_op:
+            batch_op.create_check_constraint("ck_vault_config_singleton", "id = 1")
 
     # --- credentials ------------------------------------------------------
     op.add_column(
@@ -166,9 +170,15 @@ def upgrade() -> None:
             "A migration não escolhe por você — a senha apagada é irrecuperável."
         ),
     )
-    op.create_unique_constraint(
-        "uq_credentials_service_login", "credentials", ["service_name", "login"]
-    )
+    if _is_postgres():
+        op.create_unique_constraint(
+            "uq_credentials_service_login", "credentials", ["service_name", "login"]
+        )
+    else:
+        with op.batch_alter_table("credentials") as batch_op:
+            batch_op.create_unique_constraint(
+                "uq_credentials_service_login", ["service_name", "login"]
+            )
     op.create_index("ix_credentials_service_name", "credentials", ["service_name"])
 
     # --- timestamps com fuso ---------------------------------------------
@@ -239,14 +249,22 @@ def downgrade() -> None:
                 )
 
     op.drop_index("ix_credentials_service_name", table_name="credentials")
-    op.drop_constraint(
-        "uq_credentials_service_login", "credentials", type_="unique"
-    )
+    if _is_postgres():
+        op.drop_constraint(
+            "uq_credentials_service_login", "credentials", type_="unique"
+        )
+    else:
+        with op.batch_alter_table("credentials") as batch_op:
+            batch_op.drop_constraint("uq_credentials_service_login", type_="unique")
     op.drop_column("credentials", "encrypted_totp_secret")
     op.drop_column("credentials", "encrypted_notes")
     op.drop_column("credentials", "url")
 
-    op.drop_constraint("ck_vault_config_singleton", "vault_config", type_="check")
+    if _is_postgres():
+        op.drop_constraint("ck_vault_config_singleton", "vault_config", type_="check")
+    else:
+        with op.batch_alter_table("vault_config") as batch_op:
+            batch_op.drop_constraint("ck_vault_config_singleton", type_="check")
     op.drop_column("vault_config", "updated_at")
     op.drop_column("vault_config", "totp_secret_encrypted")
     op.drop_column("vault_config", "key_check")
