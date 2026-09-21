@@ -2,14 +2,9 @@
 
 Regra que vale para o schema inteiro: **nada em texto puro que seja segredo.**
 Toda coluna que guarda segredo é `LargeBinary` e recebe um blob de
-`vault.core.crypto`. Metadado que não é segredo (nome do serviço, login, URL)
-fica legível de propósito — é o que permite listar e buscar sem pedir a senha
-mestra a cada tecla.
-
-Decisão sobre `service_name`/`login` legíveis: é uma troca consciente. Cifrá-los
-também esconderia mais de quem tem acesso direto ao banco, mas tornaria a busca
-(Fase 8) impossível sem baixar e decifrar a tabela inteira. Está registrado nas
-"Limitações conhecidas" do README em vez de ficar implícito.
+`vault.core.crypto`. Na arquitetura Zero-Knowledge, as credenciais têm todos
+os seus campos e metadados cifrados em um único blob opaco (`encrypted_data`),
+e suportam exclusão lógica via `deleted_at`.
 """
 
 from __future__ import annotations
@@ -19,10 +14,8 @@ from datetime import datetime
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
-    Index,
     LargeBinary,
     String,
-    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -45,9 +38,7 @@ class VaultConfig(Base):
     """
 
     __tablename__ = "vault_config"
-    __table_args__ = (
-        CheckConstraint("id = 1", name="ck_vault_config_singleton"),
-    )
+    __table_args__ = (CheckConstraint("id = 1", name="ck_vault_config_singleton"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
 
@@ -69,14 +60,10 @@ class VaultConfig(Base):
     key_check: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     """Sentinela cifrada: prova que a chave derivada abre este vault."""
 
-    totp_secret_encrypted: Mapped[bytes | None] = mapped_column(
-        LargeBinary, nullable=True
-    )
+    totp_secret_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     """Segredo TOTP do segundo fator da senha mestra (Fase 10). Cifrado."""
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -90,42 +77,24 @@ class VaultConfig(Base):
 
 
 class Credential(Base):
-    """Uma credencial guardada.
+    """Uma credencial guardada como blob cifrado opaco (Zero-Knowledge).
 
-    `UniqueConstraint(service_name, login)` existe para que "salvar de novo o
-    mesmo login do mesmo serviço" seja um erro explícito em vez de gerar duas
-    linhas silenciosamente divergentes — o jeito clássico de o usuário acabar com
-    duas senhas para o mesmo site e não saber qual vale.
+    Na arquitetura Zero-Knowledge, nenhum metadado (serviço, login, url) fica em
+    texto claro no banco de dados. Todo o payload da credencial é cifrado e
+    armazenado na coluna `encrypted_data`. A exclusão é lógica via `deleted_at`.
     """
 
     __tablename__ = "credentials"
-    __table_args__ = (
-        UniqueConstraint("service_name", "login", name="uq_credentials_service_login"),
-        Index("ix_credentials_service_name", "service_name"),
-    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    service_name: Mapped[str] = mapped_column(String(255))
-    login: Mapped[str] = mapped_column(String(255))
-    url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    encrypted_data: Mapped[bytes] = mapped_column(LargeBinary)
 
-    encrypted_password: Mapped[bytes] = mapped_column(LargeBinary)
-    encrypted_notes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
-    encrypted_totp_secret: Mapped[bytes | None] = mapped_column(
-        LargeBinary, nullable=True
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-
-    @property
-    def has_totp(self) -> bool:
-        return self.encrypted_totp_secret is not None
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:  # pragma: no cover - conveniência de debug
-        return f"<Credential id={self.id} service={self.service_name!r} login={self.login!r}>"
+        return f"<Credential id={self.id} deleted={self.deleted_at is not None}>"
