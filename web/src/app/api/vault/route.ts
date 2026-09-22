@@ -29,7 +29,6 @@ export async function GET() {
 
   try {
     const registros = await prisma.credential.findMany({
-      where: { deletedAt: null },
       orderBy: { createdAt: "desc" },
       // `select` explícito: o dia em que alguém acrescentar uma coluna ao
       // modelo, ela não vaza para a resposta por acidente.

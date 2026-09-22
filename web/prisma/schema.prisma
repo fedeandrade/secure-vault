@@ -27,7 +27,6 @@ model Credential {
   encryptedData String
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
-  deletedAt     DateTime?
 
   /// Incrementada a cada `PUT`. Existe desde já porque acrescentar coluna com a
   /// tabela vazia custa zero, e depois da Fase 1 custaria uma segunda migration

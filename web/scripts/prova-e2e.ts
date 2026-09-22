@@ -110,20 +110,54 @@ try {
   }
   ok("chave errada é recusada no dado REAL do banco", recusou)
 
-  // --- 9. troca de senha mexe em UM blob ---------------------------------
+  // --- 9. troca de senha: UM blob, e os registros continuam abrindo -------
+  //
+  // ⛔ A versão anterior desta seção chamava `criarVault` e comentava
+  // "re-envelopa a MESMA vaultKey". **Era falso**: `criarVault` sorteia uma
+  // vaultKey nova, e gravá-la por cima apagava a única cópia da chave que
+  // cifrou os registros — vault destruído para sempre, com o `keyCheck`
+  // regravado junto dizendo que estava tudo bem.
+  //
+  // E a asserção era `count === 1`: contava LINHAS e nunca tentava decifrá-las,
+  // então passava alegremente sobre um vault ilegível. Esta é a diferença entre
+  // uma prova e um teste que dá verde.
   const nova = await cripto.derivarChaves("Outra-Senha-Mestra-#2026", cfg!.salt, cfg!.kdfIterations)
-  // re-envelopa a MESMA vaultKey: os registros não são tocados
-  const reenvelopado = await cripto.criarVault(nova.chaveEnvelope)
+  const envelopeNovo = await cripto.reenvelopar(
+    entrada.chaveEnvelope,
+    nova.chaveEnvelope,
+    cfg!.wrappedVaultKey
+  )
   await prisma.vaultConfig.update({
     where: { id: 1 },
-    data: {
-      authHash: await hash(nova.authValue, ARGON),
-      wrappedVaultKey: reenvelopado.wrappedVaultKey,
-      keyCheck: reenvelopado.keyCheck,
-    },
+    // `keyCheck` NÃO é regravado: a vaultKey não mudou, então a sentinela antiga
+    // continua correta. Regravá-la é justamente o que mascarava o erro.
+    data: { authHash: await hash(nova.authValue, ARGON), wrappedVaultKey: envelopeNovo },
   })
-  const registrosDepois = await prisma.credential.count()
-  ok("troca de senha não reescreveu registro nenhum", registrosDepois === 1)
+
+  ok("troca de senha não reescreveu registro nenhum", (await prisma.credential.count()) === 1)
+
+  const cfgDepois = await prisma.vaultConfig.findUnique({ where: { id: 1 } })
+  const chaveDepois = await cripto.abrirVault(nova.chaveEnvelope, cfgDepois!.wrappedVaultKey)
+  ok(
+    "keyCheck ORIGINAL ainda confere depois da troca",
+    await cripto.conferirChave(chaveDepois, cfgDepois!.keyCheck)
+  )
+
+  // A prova que faltava, e a única que pega o vault destruído:
+  const depois = await cripto.decifrarPayload<typeof segredo>(
+    chaveDepois,
+    gravado.encryptedData
+  )
+  ok("o registro ANTIGO ainda abre com a senha NOVA", JSON.stringify(depois) === JSON.stringify(segredo))
+
+  // E a senha velha deixa de abrir.
+  let velhaRecusada = false
+  try {
+    await cripto.abrirVault(entrada.chaveEnvelope, cfgDepois!.wrappedVaultKey)
+  } catch {
+    velhaRecusada = true
+  }
+  ok("a senha VELHA deixa de abrir o vault", velhaRecusada)
 } finally {
   await prisma.$disconnect()
 }

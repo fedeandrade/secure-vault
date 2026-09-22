@@ -21,6 +21,7 @@ import {
   derivarChaves,
   ErroDeCripto,
   MIN_KDF_ITERATIONS,
+  reenvelopar,
 } from "./crypto"
 
 type Payload = { serviceName: string; login: string; password: string }
@@ -104,23 +105,60 @@ describe("derivarChaves", () => {
 })
 
 describe("envelope", () => {
-  it("trocar a senha mestra reescreve UM blob, e os registros continuam abrindo", async () => {
-    // É o ponto inteiro do envelope. Sem ele, trocar a senha significaria
-    // recifrar os N registros no browser sem transação — e a aba morrer no meio
-    // deixaria o vault meio ilegível, sem diagnóstico possível.
+  it("⛔ trocar a senha mestra reescreve UM blob e o registro ANTIGO continua abrindo", async () => {
+    // ⚠️ A versão anterior deste teste passava sem provar nada: ela derivava a
+    // chave nova, NÃO a usava, abria o envelope velho com a chave velha e
+    // afirmava que a chave nova não abre o envelope velho — trivialmente
+    // verdadeiro, e o oposto do requisito. Enquanto isso o único procedimento de
+    // troca que existia no repo chamava `criarVault` de novo, sorteava uma
+    // vaultKey NOVA e destruía o vault inteiro, com o `keyCheck` dizendo `true`.
+    //
+    // O que este teste exige agora: decifrar o registro gravado ANTES da troca,
+    // usando a chave reaberta DEPOIS dela. Se alguém trocar `reenvelopar` por
+    // `criarVault`, esta linha cai.
     const vault = await montarVault("senha-velha")
-    const blob = await cifrarPayload(vault.chaveVault, EXEMPLO)
+    const blobAntigo = await cifrarPayload(vault.chaveVault, EXEMPLO)
 
-    // Troca de senha: derivar novo envelope e re-envelopar a MESMA vaultKey.
     const nova = await derivarChaves("senha-nova", SALT, MIN_KDF_ITERATIONS)
-    const chaveVaultAberta = await abrirVault(vault.chaveEnvelope, vault.wrappedVaultKey)
-    expect(chaveVaultAberta).toBeDefined()
+    const envelopeNovo = await reenvelopar(
+      vault.chaveEnvelope,
+      nova.chaveEnvelope,
+      vault.wrappedVaultKey
+    )
 
-    // O registro antigo continua abrindo com a vaultKey — nada foi recifrado.
-    expect(await decifrarPayload<Payload>(chaveVaultAberta, blob)).toEqual(EXEMPLO)
+    // O envelope mudou...
+    expect(envelopeNovo).not.toBe(vault.wrappedVaultKey)
+    // ...mas a vaultKey dentro dele é a MESMA.
+    const chaveDepois = await abrirVault(nova.chaveEnvelope, envelopeNovo)
+    expect(await decifrarPayload<Payload>(chaveDepois, blobAntigo)).toEqual(EXEMPLO)
 
-    // E a senha velha deixa de abrir o envelope quando ele for regravado.
-    await expect(abrirVault(nova.chaveEnvelope, vault.wrappedVaultKey)).rejects.toThrow()
+    // E o keyCheck original continua valendo, porque a vaultKey não mudou.
+    expect(await conferirChave(chaveDepois, vault.keyCheck)).toBe(true)
+
+    // A senha velha deixa de abrir o envelope novo.
+    await expect(abrirVault(vault.chaveEnvelope, envelopeNovo)).rejects.toThrow(
+      ErroDeCripto
+    )
+  })
+
+  it("⛔ `criarVault` no lugar de `reenvelopar` DESTRÓI o vault — e o keyCheck aprova", async () => {
+    // Este teste fixa o defeito para que ele não volte disfarçado. Ele não
+    // verifica um comportamento desejado: verifica que o caminho errado é
+    // detectavelmente errado, e que a sentinela NÃO é quem o detecta.
+    const vault = await montarVault("senha-velha")
+    const blobAntigo = await cifrarPayload(vault.chaveVault, EXEMPLO)
+
+    const nova = await derivarChaves("senha-nova", SALT, MIN_KDF_ITERATIONS)
+    const errado = await criarVault(nova.chaveEnvelope) // ⛔ vaultKey nova
+
+    const chaveErrada = await abrirVault(nova.chaveEnvelope, errado.wrappedVaultKey)
+
+    // A sentinela regravada junto APROVA o vault destruído. É por isso que ela
+    // não pode ser a única verificação antes de renderizar.
+    expect(await conferirChave(chaveErrada, errado.keyCheck)).toBe(true)
+
+    // E o dado real não abre.
+    await expect(decifrarPayload(chaveErrada, blobAntigo)).rejects.toThrow(ErroDeCripto)
   })
 
   it("keyCheck aceita a chave certa e recusa a errada", async () => {

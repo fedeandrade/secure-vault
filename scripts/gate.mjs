@@ -120,6 +120,20 @@ if (!temDeps) {
   resultados.push(rodar("web · typegen", "npx next typegen", WEB))
   resultados.push(rodar("web · tsc", "npx tsc --noEmit", WEB))
   resultados.push(rodar("web · eslint", "npx eslint", WEB))
+  // ⚠️ `DATABASE_URL` decide se os testes de rota rodam ou são PULADOS.
+  //
+  // Eles sobem o Next de verdade e batem nas 4 rotas do vault — é o único lugar
+  // que prova que o 401 está LIGADO em cada uma, e não só que a função que
+  // decide funciona. Sem banco eles somem em silêncio no meio de um "21 passed",
+  // e "pulado" lido como "verde" foi exatamente o buraco que deixou a CSP
+  // quebrar o site sem ninguém notar.
+  if (!process.env.DATABASE_URL) {
+    console.warn(
+      "\n[gate] ⚠️  DATABASE_URL ausente — os testes de ROTA (401, CSP, nonce)\n" +
+        "[gate]     foram PULADOS, não aprovados. Eles sobem o Next e são os\n" +
+        "[gate]     únicos que provam a camada HTTP. Defina DATABASE_URL para medi-los.\n"
+    )
+  }
   resultados.push(rodar("web · vitest", "npx vitest run", WEB))
   // `next build` entra porque é o que pega erro que o tsc não vê: rota que não
   // resolve, import de módulo só-servidor no cliente, config inválida.
