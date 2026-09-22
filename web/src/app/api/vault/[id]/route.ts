@@ -10,7 +10,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       data: { encryptedData },
     });
     return NextResponse.json(record);
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to update record' }, { status: 500 });
   }
 }
@@ -18,12 +18,12 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
 export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-    const record = await prisma.credential.update({
+    await prisma.credential.update({
       where: { id },
       data: { deletedAt: new Date() },
     });
     return NextResponse.json({ success: true });
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to delete record' }, { status: 500 });
   }
 }

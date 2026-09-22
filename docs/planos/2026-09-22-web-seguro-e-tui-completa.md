@@ -45,7 +45,7 @@ de arquitetura e está na Fase 4**, deliberadamente depois de parar o sangrament
 
 ---
 
-## Fase 1 — o site deixa de expor senha `[REPLANEJADA]`
+## Fase 1 — o site deixa de expor senha `[REPLANEJADA — desbloqueada, schema pronto]`
 
 > ⛔ **A primeira versão desta fase foi REPROVADA por revisão adversarial em
 > 22/09/2026 — 54/100.** Ela **criava dois caminhos de ataque que não existiam** e
@@ -54,6 +54,28 @@ de arquitetura e está na Fase 4**, deliberadamente depois de parar o sangrament
 > O que a revisão **confirmou** estar certo: `authValue` não é invertível (resistência
 > a pré-imagem do HMAC), e servir o `salt` sem autenticação é correto e necessário —
 > o cliente precisa dele antes de ter qualquer chave, e é o que todo vault ZK faz.
+
+### O que já está no lugar (22/09/2026)
+
+A fase estava parada esperando a decisão de banco, que saiu. **O schema já foi
+escrito e migrado junto com a Fase 2** — `VaultConfig` e `Session` existem em
+`web/prisma/schema.prisma` e na migration inicial, com os comentários que
+prendem as decisões abaixo ao código.
+
+Dois ajustes de desenho entraram junto com o schema, e valem ser lidos antes de
+implementar:
+
+- ⛔ **`Session.id` guarda o SHA-256 do token do cookie, nunca o token.** O
+  argumento inteiro a favor de sessão em banco (Decisão 1.3) foi *"vazar o banco
+  não dá acesso"*; gravar o token cru entrega todas as sessões ativas a quem ler
+  uma linha, e desfaz a decisão sem que ninguém perceba.
+- ⚠️ ~~`tokenVersion` em `VaultConfig`.~~ **Removido.** Com sessão em banco,
+  *encerrar todas as sessões* — e a troca de senha mestra — é
+  `session.deleteMany({})`. A coluna não teria leitor, e coluna sem leitor faz o
+  próximo a mexer aqui acreditar que existe revogação onde não existe.
+
+Falta implementar: tudo que é código (derivação, rotas, middleware, CSP, init
+local, runner de teste).
 
 ### Decisão 1.1 — derivação com HKDF, e a chave NÃO é exportável
 
@@ -286,7 +308,7 @@ próprios critérios**. Instalar o runner entra no escopo da Fase 1.
 
 ---
 
-## Fase 2 — o site compila `[PARCIAL — bloqueada na Fase 4]`
+## Fase 2 — o site compila `[FECHADA]`
 
 ⚠️ **Estimei "20 minutos para declarar dependência". Estava errado**, e o erro vale
 ficar registrado: ao puxar o fio, o que apareceu foi que **o site nunca foi
@@ -317,24 +339,58 @@ executável**, não que faltava um pacote.
 - **Assinatura das rotas corrigida para Next 16**: `params` chega como `Promise`,
   e o tipo dizia síncrono (`PUT` e `DELETE` de `api/vault/[id]`).
 
-### Bloqueado ⛔ — e o bloqueio é legítimo
+### Desbloqueado ✅ — a decisão de banco saiu em 22/09/2026
 
-`npx tsc --noEmit` deixou **um** erro:
+⚠️ ~~"`npx tsc --noEmit` deixou **um** erro: `Module '"@prisma/client"' has no
+exported member 'PrismaClient'`. Escolher o adapter é escolher o banco, e isso é
+a decisão da Fase 4. **Fase 2 fecha junto com a decisão de banco.**"~~
+**Superado:** o Felipe escolheu **Postgres próprio do site**. Não fica amarrado
+ao vault Python enquanto os formatos forem incompatíveis, e é o que o Prisma 7
+espera com driver adapter.
 
-```
-src/lib/prisma.ts(1,10): error TS2305:
-Module '"@prisma/client"' has no exported member 'PrismaClient'.
-```
+O erro tinha duas causas, não uma, e a segunda só apareceu ao consertar a primeira:
 
-Porque o Prisma 7 mudou o contrato: **`url` sai do `schema.prisma`**, vai para
-`prisma.config.ts`, e o `PrismaClient` passa a exigir um **driver adapter**.
+- `datasource` do Prisma 7 **não aceita mais `url`** — ela vai para
+  `prisma.config.ts`.
+- O gerador `prisma-client-js` **saiu**. O novo `prisma-client` exige `output`
+  explícito e **não escreve dentro de `node_modules`** — por isso o import deixa
+  de ser `@prisma/client` e passa a ser o caminho gerado
+  (`@/generated/prisma/client`). Era esta a causa real da mensagem.
 
-**Escolher o adapter é escolher o banco** — e isso é exatamente a decisão da
-Fase 4. Fixar `@prisma/adapter-better-sqlite3` agora congelaria o `dev.db` como
-resposta antes de a pergunta ser feita. Além disso a Fase 1 vai acrescentar
-`VaultConfig` ao schema; fazer a migration duas vezes é desperdício.
+O que entrou:
 
-**Fase 2 fecha junto com a decisão de banco**, e não antes.
+- **`web/prisma/schema.prisma`**: `provider = "postgresql"`, sem `url`; gerador
+  `prisma-client` com `output = "../src/generated/prisma"`.
+- **`web/prisma.config.ts`** novo, com `import "dotenv/config"` — o CLI do
+  Prisma 7 deixou de carregar `.env` sozinho.
+- ⚠️ **`process.env["DATABASE_URL"]`, e não `env("DATABASE_URL")`.** Medido:
+  `env()` **não é preguiçoso** — resolve ao carregar o config e aborta com
+  `PrismaConfigEnvError` se a variável faltar. Isso quebraria `prisma generate`
+  no CI e no build da Vercel, onde a URL do banco não precisa (nem deve) existir
+  para gerar tipos. Com `process.env`, generate passa sem a variável e só
+  `migrate`/`studio` reclamam. **O job `web` do CI roda sem `DATABASE_URL` de
+  propósito: quem trocar de volta deixa o CI vermelho.**
+- **`@prisma/adapter-pg`** instalado (`pg` vem junto, transitivo). O cliente é
+  criado na **primeira consulta**, não ao carregar o módulo, e recusa subir sem
+  `DATABASE_URL` — sem essa recusa o `pg` cai nos padrões dele e o app conecta em
+  silêncio no banco errado, com sintoma de *"o vault está vazio"*.
+- **`"build": "prisma generate && next build"`** — o `postinstall` foi removido na
+  limpeza acima, então o build precisa gerar o cliente; provado apagando
+  `src/generated/` e rodando o build do zero.
+- **Serviço `postgres-web`** no `docker-compose.yml`, com volume e porta (5433)
+  próprios. **Não** um segundo database no container existente: script de
+  `initdb.d` só roda na primeira criação do volume, e `vault_pgdata` já existe —
+  o database simplesmente não seria criado, em silêncio.
+- **Migration inicial** em `web/prisma/migrations/20260922120000_init_postgres_zero_knowledge/`,
+  gerada offline (`migrate diff --from-empty --to-schema`, porque não há Docker
+  nesta máquina). Já traz `VaultConfig` e `Session` da Fase 1 — fazer a migration
+  duas vezes era o desperdício que o bloqueio previa.
+- **Job `web` no CI** (`npm ci` → `prisma generate` → `tsc` → `eslint` →
+  `next build`), separado do job Python: uma falha de lint do TypeScript não pode
+  esconder o resultado da suíte Python.
+- Os cinco `any` e os bindings de `catch` sem leitor saíram, senão o job novo
+  nasceria vermelho. `encryptPayload`/`decryptPayload` viraram genéricos — mesmo
+  comportamento, com o tipo devolvido a quem chama.
 
 ### Critérios de aceite (revistos)
 
@@ -342,9 +398,9 @@ resposta antes de a pergunta ser feita. Além disso a Fase 1 vai acrescentar
 - [x] `web/package.json` declara tudo que é importado.
 - [x] CLI e cliente do Prisma na mesma versão estável.
 - [x] Rotas tipadas conforme o Next 16.
-- [ ] `npx tsc --noEmit` limpo — **depende do adapter (Fase 4)**.
-- [ ] `npx next build` exit 0 — idem.
-- [ ] `npm run lint` limpo.
+- [x] `npx tsc --noEmit` limpo — **0 erros** (medido em 22/09/2026).
+- [x] `npx next build` exit 0.
+- [x] `npm run lint` limpo — 0 erros, 0 avisos.
 
 ---
 
@@ -369,6 +425,20 @@ UX**, não código a portar: elas falam com uma API que não existe mais
 
 **Não é implementação, é decisão.** Registrada aqui para não ser tomada por acidente.
 
+### Decidido em 22/09/2026 — o banco do site é próprio
+
+O Felipe escolheu: **Postgres dedicado ao site**, separado do banco do CLI.
+Isso é metade da Fase 4 e foi o que destravou as Fases 1 e 2.
+
+O que essa escolha **fecha**: o site deixa de depender de filesystem (era
+`file:./dev.db`, que em host serverless é efêmero ou somente-leitura), e o
+adapter do Prisma 7 pôde ser escolhido.
+
+O que essa escolha **não fecha**: banco separado não decide se os dois produtos
+compartilham *formato de vault*. Hoje não compartilham — o Python cifra a
+credencial inteira num blob sob AAD; o web grava `iv.ct` por registro. A tabela
+abaixo continua aberta.
+
 | Caminho | Custo | O que ganha | O que perde |
 |---|---|---|---|
 | **A — site vira cliente do vault Python** | alto: Argon2id no browser (WASM), formato de blob com AAD, `id` inteiro, migration | um vault só, uma criptografia só | reescrever a cripto do site |
@@ -377,6 +447,10 @@ UX**, não código a portar: elas falam com uma API que não existe mais
 
 **Recomendação: A**, depois das fases 1 a 3. **C está descartado** — qualquer desenho
 em que o servidor decifra deixa de ser Zero-Knowledge, que é a premissa do produto.
+
+⚠️ A Fase 1 foi desenhada para **não encarecer o A**: HKDF com rótulo fixo é a
+mesma política de `src/vault/core/kdf.py`, então unificar vira troca de parâmetro
+em vez de segunda reescrita. Adotar o formato Bitwarden teria custado o dobro.
 
 ---
 
@@ -391,12 +465,11 @@ Nenhum destes expõe senha hoje. Ficam escritos para não sumirem.
 2. **Todas as senhas decifradas de uma vez, e sem auto-lock de tela.** O TTL de
    sessão é do servidor, não da aba: notebook aberto expõe o vault inteiro.
    Considerar decifrar sob demanda, por registro.
-3. ⛔ **`schema.prisma:7` fixa `file:./dev.db`, sem variável de ambiente.** Em
-   qualquer host serverless o filesystem é efêmero ou somente-leitura → **vault
-   perdido ou não gravável**. O portão da Fase 1 é "seguro para publicar", mas a
-   Fase 1 não toca nisso: o portão pode passar e a publicação ainda perder dados.
-   **Resolve junto com a Fase 4**, que é onde o banco é escolhido — e é o mesmo
-   bloqueio que segura a Fase 2.
+3. ✅ ~~**`schema.prisma:7` fixa `file:./dev.db`, sem variável de ambiente.** Em
+   qualquer host serverless o filesystem é efêmero ou somente-leitura → vault
+   perdido ou não gravável.~~ **Resolvido em 22/09/2026** com a decisão de banco:
+   `provider = "postgresql"`, URL por `DATABASE_URL` em `prisma.config.ts`,
+   nenhum caminho de arquivo no schema. Ver Fase 2.
 4. **`encryptedData` aceito sem validação de tipo nem de tamanho**
    (`api/vault/route.ts:18`). Depois da autenticação ainda permite encher o
    disco; antes dela, qualquer um.

@@ -22,7 +22,7 @@ export async function deriveKey(masterPassword: string, salt: string): Promise<C
   );
 }
 
-export async function encryptPayload(key: CryptoKey, payload: any): Promise<string> {
+export async function encryptPayload<T>(key: CryptoKey, payload: T): Promise<string> {
   const enc = new TextEncoder();
   const iv = crypto.getRandomValues(new Uint8Array(12));
   
@@ -42,7 +42,7 @@ export async function encryptPayload(key: CryptoKey, payload: any): Promise<stri
   return ivBase64 + "." + cipherBase64;
 }
 
-export async function decryptPayload(key: CryptoKey, encryptedData: string): Promise<any> {
+export async function decryptPayload<T>(key: CryptoKey, encryptedData: string): Promise<T> {
   const dec = new TextDecoder();
   const [ivBase64, cipherBase64] = encryptedData.split(".");
   
@@ -65,5 +65,5 @@ export async function decryptPayload(key: CryptoKey, encryptedData: string): Pro
     ciphertext
   );
 
-  return JSON.parse(dec.decode(plainBuffer));
+  return JSON.parse(dec.decode(plainBuffer)) as T;
 }

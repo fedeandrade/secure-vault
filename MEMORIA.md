@@ -232,8 +232,10 @@ a migração é manual.
 
 ## ⛔ Os dois vaults não falam a mesma língua
 
-Achado em 22/09/2026 e **não resolvido**. Apontar os dois para o mesmo banco hoje
-não funciona, e a divergência é maior do que um detalhe de tipo:
+Achado em 22/09/2026. **A divergência de formato continua aberta**; o que foi
+resolvido é o banco: em 22/09/2026 o Felipe decidiu **Postgres próprio do site**,
+separado do banco do CLI, e a pergunta *"apontar os dois para o mesmo banco"*
+saiu da mesa. A divergência é maior do que um detalhe de tipo:
 
 | | Python (CLI/TUI) | Web (`web/`) |
 |---|---|---|
@@ -247,6 +249,50 @@ não funciona, e a divergência é maior do que um detalhe de tipo:
 AAD, o lado web não tem como detectar um blob trocado de campo ou de registro.
 Decidir qual formato vence **antes** de qualquer sincronização.
 
+## O site: banco decidido, Fase 2 fechada (22/09/2026)
+
+Decisão do Felipe: **Postgres dedicado ao site**. Destravou as Fases 1 e 2 do
+plano em `docs/planos/2026-09-22-web-seguro-e-tui-completa.md`.
+
+O que ficou provado nesta máquina, com comando rodado:
+
+| Medida | Resultado |
+|---|---|
+| `npx tsc --noEmit` em `web/` | **0 erros** (era 1, o `PrismaClient` inexistente) |
+| `npx eslint` em `web/` | **0 erros, 0 avisos** (eram 5 erros e 9 avisos) |
+| `npx next build` | verde, 5 rotas |
+| `rm -rf src/generated && npm run build` | reconstrói o cliente sozinho |
+| `prisma generate` **sem** `DATABASE_URL` | passa |
+
+Três armadilhas do Prisma 7 que custaram tempo e não estão óbvias na mensagem
+de erro:
+
+1. **`prisma-client-js` não existe mais.** O gerador novo é `prisma-client`,
+   exige `output` e **não escreve em `node_modules`** — por isso
+   `import { PrismaClient } from '@prisma/client'` falha com *has no exported
+   member*. O import passa a ser o caminho gerado.
+2. **`url` saiu do `datasource`.** Vai para `prisma.config.ts`, e o runtime
+   precisa de driver adapter (`@prisma/adapter-pg`).
+3. ⚠️ **`env("DATABASE_URL")` do `prisma/config` NÃO é preguiçoso** — medido:
+   aborta com `PrismaConfigEnvError` ao carregar o config. Usar
+   `process.env["DATABASE_URL"]`, senão `prisma generate` quebra no CI e no
+   build da Vercel, onde não há banco. **O job `web` do CI roda sem
+   `DATABASE_URL` justamente para que essa troca fique vermelha.**
+
+Também entrou: serviço `postgres-web` no `docker-compose.yml` (volume e porta
+5433 próprios — **não** um segundo database no container existente, porque
+`initdb.d` só roda na primeira criação do volume e `vault_pgdata` já existe),
+`web/.env.example` com `postgresql://` e **não** o `postgresql+psycopg://` do
+lado Python (o `pg` não entende esse esquema), e o job `web` no CI.
+
+O schema já traz `VaultConfig` e `Session` da Fase 1, para não migrar duas
+vezes. Duas decisões de segurança foram gravadas em comentário no schema:
+`Session.id` guarda o **SHA-256 do token**, nunca o token; e `tokenVersion` foi
+**removido** de `VaultConfig` — com sessão em banco, revogar é `deleteMany`, e
+coluna sem leitor faz o próximo a mexer acreditar que há revogação onde não há.
+
+**Falta a Fase 1 inteira em código.** Enquanto ela não fechar, o site continua
+com salt global fixo e API sem autenticação: **não pode ir ao ar.**
 ## ⛔ Exclusão: por que voltou a ser física
 
 `delete_credential` apaga a linha. A primeira versão deste refactor marcava
@@ -376,7 +422,30 @@ qual base — `origin/main` é a única viva.
 
 ## Pendências
 
+- [ ] **Fase 1 do site, em código** — derivação HKDF com chave não-exportável,
+      envelope `wrappedVaultKey`, sessão em banco, piso de KDF, init fora do
+      HTTP, blob `v1.`, `keyCheck`, ordem da rota de login, CSP, runner de
+      teste. O schema já está pronto; falta o resto. **Enquanto não fechar, o
+      site não pode ir ao ar.**
+- [ ] **Fase 3 — CRUD na TUI.** `src/vault/tui/app.py` é só leitura; faltam
+      adicionar, editar e apagar.
+- [ ] **Fase 4, metade restante** — o banco foi decidido; falta decidir se site
+      e CLI passam a compartilhar o mesmo *formato* de vault (recomendação: A).
+- [ ] ⛔ **A migration do site nunca rodou contra um Postgres de verdade.** Ela
+      foi gerada **offline** (`prisma migrate diff --from-empty --to-schema`),
+      porque não há Docker nesta máquina. **Tentado em 22/09/2026 e falhou por
+      causa do ambiente, não do projeto:** o Postgres portátil do EnterpriseDB
+      subiu na 55433, mas morreu ao criar o database com
+      `exception 0xC0000142` (falha de inicialização de DLL no Windows) — havia
+      11 processos `postgres.exe` de outras sessões rodando ao mesmo tempo.
+      **Como fechar:** `docker compose up postgres-web` (ou o portátil, com as
+      outras instâncias paradas), `npm run db:deploy`, e então um
+      `prisma.credential.count()`. É esse count que prova que o adapter conecta;
+      `tsc --noEmit` passa sem tocar no banco e **não prova nada disso**.
 - [ ] Preencher os dois TODOs pessoais do README (Motivação; LinkedIn/contato).
       São as únicas seções que só o Renan pode escrever.
-- [ ] Decidir com o Felipe/Renan se esta branch vira PR para `develop`.
-      **Nada foi pushado.**
+- [x] ~~Decidir com o Felipe/Renan se esta branch vira PR para `develop`.
+      **Nada foi pushado.**~~ **Vencido em 22/09/2026:** `origin/develop` não
+      existe mais, o Felipe autorizou publicar, e o trabalho está no fork com
+      PR aberto contra `main`, marcado `[NÃO MESCLAR AINDA]`. Ver "Onde o
+      trabalho está hoje".

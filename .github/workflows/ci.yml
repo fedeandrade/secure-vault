@@ -57,3 +57,41 @@ jobs:
 
       - name: Roda a suite de testes
         run: uv run pytest tests/ -v
+
+  # Job separado do Python de propósito: o site tem toolchain própria (Node) e
+  # banco próprio (decisão de 22/09/2026). Rodar junto faria uma falha de lint
+  # do TypeScript esconder o resultado da suíte Python, e vice-versa.
+  #
+  # Não há `DATABASE_URL` aqui, e isso é a prova de uma decisão: `prisma
+  # generate` roda sem conexão. Se alguém trocar o `process.env["DATABASE_URL"]`
+  # do `prisma.config.ts` por `env("DATABASE_URL")`, este job fica vermelho —
+  # que é exatamente o aviso que se quer.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Instala as dependências
+        run: npm ci
+
+      - name: Gera o cliente do Prisma
+        run: npx prisma generate
+
+      - name: Confere os tipos
+        run: npx tsc --noEmit
+
+      - name: Confere o lint
+        run: npx eslint
+
+      - name: Compila o site
+        run: npx next build

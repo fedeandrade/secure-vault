@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Cliente gerado pelo `prisma generate` — reconstruído pelo `npm run build`.
+/src/generated/
+
+# O exemplo precisa ser versionado; o `.env*` acima o engoliria.
+!.env.example

@@ -8,7 +8,7 @@ export async function GET() {
       orderBy: { createdAt: 'desc' },
     });
     return NextResponse.json(records);
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to fetch vault' }, { status: 500 });
   }
 }
@@ -20,7 +20,7 @@ export async function POST(req: Request) {
       data: { encryptedData },
     });
     return NextResponse.json(record, { status: 201 });
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Failed to save record' }, { status: 500 });
   }
 }

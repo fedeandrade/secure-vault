@@ -1,13 +1,25 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { deriveKey, encryptPayload, decryptPayload } from "@/lib/crypto";
+
+/** O que vai cifrado dentro de `encryptedData` — o servidor nunca vê isto. */
+type VaultPayload = {
+  serviceName: string;
+  login: string;
+  password: string;
+  url?: string;
+};
+
+/** O que a API devolve: id e blob opaco, nada mais. */
+type VaultRecord = { id: string; encryptedData: string };
+
+type VaultItem = VaultPayload & { id: string };
 
 export default function VaultApp() {
   const [masterPassword, setMasterPassword] = useState("");
   const [cryptoKey, setCryptoKey] = useState<CryptoKey | null>(null);
-  const [records, setRecords] = useState<any[]>([]);
-  const [decryptedVault, setDecryptedVault] = useState<any[]>([]);
+  const [decryptedVault, setDecryptedVault] = useState<VaultItem[]>([]);
   const [search, setSearch] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -27,7 +39,7 @@ export default function VaultApp() {
       const key = await deriveKey(masterPassword, SALT);
       setCryptoKey(key);
       await fetchVault(key);
-    } catch (err) {
+    } catch {
       alert("Failed to unlock");
     } finally {
       setIsLoading(false);
@@ -39,22 +51,21 @@ export default function VaultApp() {
     try {
       const res = await fetch("/api/vault");
       if (res.ok) {
-        const data = await res.json();
-        setRecords(data);
+        const data: VaultRecord[] = await res.json();
         
         // Decrypt in memory
         const decrypted = await Promise.all(
-          data.map(async (record: any) => {
+          data.map(async (record: VaultRecord): Promise<VaultItem | null> => {
             try {
-              const payload = await decryptPayload(key, record.encryptedData);
+              const payload = await decryptPayload<VaultPayload>(key, record.encryptedData);
               return { ...payload, id: record.id };
-            } catch (e) {
+            } catch {
               console.error("Decryption failed for record", record.id);
               return null;
             }
           })
         );
-        setDecryptedVault(decrypted.filter(Boolean));
+        setDecryptedVault(decrypted.filter((item): item is VaultItem => item !== null));
       }
     } catch (e) {
       console.error(e);
