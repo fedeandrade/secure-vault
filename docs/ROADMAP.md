@@ -10,7 +10,7 @@ no [`README.md`](../README.md). Este documento cobre o que veio depois.
 | Frente | Estado | Bloqueio |
 |---|---|---|
 | **Zero-Knowledge no CLI/TUI** | ✅ fechado | — |
-| **Fase 1** — site deixa de expor senha | ⛔ **não implementado** (replanejado, schema pronto) | é o portão de "publicável" |
+| **Fase 1** — site deixa de expor senha | 🔶 **implementada, não verificada contra banco real** | falta rodar com Postgres de pé |
 | **Fase 2** — site compila | ✅ fechado | — |
 | **Fase 3** — CRUD na TUI | ⏳ não começado | — |
 | **Fase 4** — site e CLI, mesmo vault? | 🔶 metade decidida | falta o formato |
@@ -43,43 +43,65 @@ automático** de migração. É limitação declarada, não descuido — ou se e
 
 ---
 
-## ⛔ Fase 1 — o site deixa de expor senha
+## 🔶 Fase 1 — o site deixa de expor senha
 
-**É o portão. Enquanto não fechar, `web/` não vai a lugar nenhum.**
+**Implementada em 22/09/2026.** ⚠️ **Nunca rodou contra um Postgres de pé** —
+`tsc`, `eslint`, `vitest` e `next build` passam, e nenhum deles abre conexão.
+Até essa prova existir, isto é código escrito, não fluxo verificado.
 
-Hoje o site tem salt global fixo (`"secure-vault-global-salt"`), **zero**
-autenticação nas rotas e chave de cifragem exportável. Qualquer um que abra a URL
-lê o vault inteiro.
+### O que foi feito
 
-⚠️ **A primeira versão desta fase foi REPROVADA por revisão adversarial —
-54/100.** Ela criava dois caminhos de ataque que não existiam: rebaixamento de KDF
-servido pelo servidor, e inicialização por HTTP público que permitia trancar o
-dono para fora. O desenho atual é o revisado.
+| Item | Onde |
+|---|---|
+| Derivação HKDF, chave `extractable: false` | `src/lib/crypto.ts` |
+| Envelope `wrappedVaultKey` + `keyCheck` | idem |
+| Blob `v1.`, versão desconhecida com mensagem própria | idem |
+| Piso `MIN_KDF_ITERATIONS` recusando abaixo de 600k | idem |
+| Sessão em banco, SHA-256 do token, cookie `__Host-` | `src/lib/session.ts` |
+| Login com ordem validar→bloqueio→semáforo→argon2id | `api/auth/login/route.ts` |
+| 401 nas 4 rotas do vault; limite de 64 KB no blob | `api/vault/**` |
+| Config servida sem auth; **sem `POST`** | `api/vault/config/route.ts` |
+| Inicialização fora do HTTP, com piso de força de senha | `scripts/vault-init.ts` |
+| CSP, `Referrer-Policy`, `nosniff`, `frame-ancestors 'none'` | `next.config.ts` |
+| Pin de `{salt, kdfIterations}`; erro "N de M" em vez de lista vazia | `src/app/page.tsx` |
 
-### Já está no lugar
+**21 testes** no site (eram 0 antes de hoje).
 
-- `VaultConfig` e `Session` no schema e na migration, com as decisões de
-  segurança gravadas em comentário no próprio `schema.prisma`.
-- `Credential.version`, para o AAD `v2` não custar uma segunda migration.
-- **Harness de teste**: `vitest` instalado e rodando, 7 testes de cripto. Sem ele
-  a fase não conseguia fechar pelos próprios critérios de aceite.
+### Três decisões que divergem do plano, e por quê
 
-### Falta — tudo que é código
+1. ⚠️ **`SESSION_SECRET` não existe.** O plano exigia ≥32 bytes validados
+   preguiçosamente — herança do desenho com JWT, que a própria Decisão 1.3
+   reverteu. Com sessão em banco e token de CSPRNG **não há nada para
+   assinar**. Variável de ambiente que ninguém lê faz o próximo a mexer
+   acreditar que existe proteção onde não existe. Mesma razão pela qual
+   `tokenVersion` saiu do schema.
+2. ⚠️ **A CSP não usa nonce.** O plano pedia `script-src 'self' 'nonce-…'`;
+   ficou `script-src 'self'`, sem `unsafe-inline`, que é o que impede
+   execução de script injetado. Nonce por requisição exigiria middleware, e
+   no Next 16 middleware roda no Edge — onde o `pg` não carrega.
+3. ⚠️ **Exclusão no site continua soft**, ao contrário do lado Python. Lá ela
+   voltou a ser física porque o `vault passwd` re-cifrava a credencial
+   apagada, mantendo viva a senha que o dono apagou por ter vazado. Aqui não
+   existe re-cifragem por registro — o envelope resolve a troca de senha com
+   **um** blob —, então a lápide não ressuscita segredo nenhum.
 
-- [ ] Derivação HKDF com `deriveBits`, chave `extractable: false`
-- [ ] `wrappedVaultKey` (envelope) e `keyCheck`
-- [ ] Autenticação real nas 4 rotas; sessão em banco; cookie `__Host-`
-- [ ] Piso `MIN_KDF_ITERATIONS` + pin de `{salt, iterações}`
-- [ ] `npm run vault:init` local (a inicialização sai do HTTP)
-- [ ] Blob `v1.`; erro explícito em vez de lista vazia
-- [ ] Rate limit e validação de `authValue` **antes** do argon2id
-- [ ] CSP, `Referrer-Policy`, `X-Content-Type-Options`, checagem de `Origin`
-- [ ] `SESSION_SECRET` ≥32 bytes, validado preguiçosamente
+### ⛔ Falta para a fase fechar
 
-Critérios de aceite completos: no plano, seção "Fase 1".
+- [ ] Subir o Postgres, rodar `npm run vault:init` e destrancar o vault de
+      ponta a ponta. **Nada abaixo disto vale sem esse passo.**
+- [ ] Teste de integração provando 401 sem cookie nas 4 rotas (hoje as
+      guardas têm teste unitário; a rota inteira, não).
+- [ ] Teste provando que a senha mestra não aparece em nenhum corpo de
+      requisição.
+- [ ] Revisão adversarial independente do código — a do plano revisou o
+      desenho, não a implementação.
+
+⚠️ **Medição que derrubou uma afirmação do plano:** 600k iterações de
+PBKDF2-SHA256 custam **~98 ms** nesta máquina, não "~1 s". A defesa contra
+força bruta online é o rate limit, não o custo do KDF — quem raciocinar com
+o número antigo superestima a barreira em 10x.
 
 ---
-
 ## ✅ Fase 2 — o site compila
 
 | Medida | Antes | Agora |

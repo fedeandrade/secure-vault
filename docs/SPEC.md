@@ -125,11 +125,16 @@ enfeite.
 
 ## 3. Invariantes do cliente web
 
-⛔ **Estado em 22/09/2026: o site NÃO cumpre esta seção.** Ele tem salt global
-fixo, API sem autenticação nenhuma e chave exportável. A Fase 1 do
-[`ROADMAP`](ROADMAP.md) é o trabalho de fazê-lo cumprir. **Não publicar antes.**
+🔶 **Estado em 22/09/2026: implementado, não verificado contra banco real.**
 
-O que **DEVE** valer quando a Fase 1 fechar:
+⚠️ ~~"O site NÃO cumpre esta seção. Ele tem salt global fixo, API sem
+autenticação nenhuma e chave exportável."~~ **Superado no mesmo dia** — os 14
+invariantes abaixo estão em código, com 21 testes. Mas `tsc`, `eslint`,
+`vitest` e `next build` **não abrem conexão com banco nenhum**: o fluxo
+completo (init → login → destrancar → gravar) nunca rodou.
+
+⛔ **Continua valendo: não publicar.** Código que compila não é fluxo
+verificado, e a implementação ainda não passou por revisão adversarial.
 
 | # | Invariante | Por quê |
 |---|---|---|
@@ -181,4 +186,12 @@ verificou — torceu.**
 | Blob adulterado é recusado | `web/src/lib/crypto.test.ts` |
 | Salt diferente ⇒ chave diferente | `web/src/lib/crypto.test.ts` |
 | Migration recusa vault populado | `tests/integration/test_migrations.py` |
+| Chave de cifragem é não-exportável | `web/src/lib/crypto.test.ts` — `exportKey` tem de lançar |
+| KDF abaixo do piso é recusado | idem — erro visível, não degradação |
+| `authValue` vazado não decifra nada | idem — importa o `authValue` como chave e falha |
+| Troca de senha reescreve UM blob | idem — o registro continua abrindo |
+| Versão de blob desconhecida tem mensagem própria | idem |
+| `authValue` malformado é recusado antes do argon2id | `web/src/lib/auth-guardas.test.ts` |
+| O atraso do login tem teto (senão vira auto-DoS) | idem |
+| Origem cruzada é recusada, inclusive as parecidas | idem |
 | Tudo junto | `node scripts/gate.mjs` — e ele **reprova** de verdade: com o IV fixado em zeros, saiu exit 1 apontando `web · vitest` |

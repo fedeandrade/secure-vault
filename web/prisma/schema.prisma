@@ -10,6 +10,12 @@
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
+
+  // Os imports internos do cliente gerado saem SEM extensão por padrão, e o ESM
+  // nativo do Node recusa isso (`ERR_MODULE_NOT_FOUND` em `./enums`). Com `ts`,
+  // o script `vault:init` roda por `node` direto — uma dependência a menos num
+  // gerenciador de senhas.
+  importFileExtension = "ts"
 }
 
 datasource db {
