@@ -30,3 +30,12 @@ htmlcov/
 
 # Handoff local entre sessões/máquinas (não deve ir pro repo público)
 HANDOFF.md
+
+# Skills geradas pelo `prisma skills sync` (postinstall removido em 22/09/2026).
+# São saída de ferramenta, não fonte: descrevem a Prisma Platform, produto que
+# este projeto NÃO usa — aqui é Prisma ORM clássico. Ficam em disco porque são
+# do Felipe; fora do versionamento porque ninguém as edita à mão.
+web/.agents/
+web/.cursor/
+web/.devin/
+web/.claude/skills/prisma-*/

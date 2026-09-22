@@ -1,0 +1,109 @@
+// Prisma 7. Duas coisas mudaram em relação ao 6 e as duas quebram silenciosamente
+// se forem esquecidas:
+//
+// 1. O gerador `prisma-client-js` saiu. O novo `prisma-client` exige `output`
+//    explícito e NÃO escreve dentro de node_modules — por isso o import deixa de
+//    ser `@prisma/client` e passa a ser o caminho gerado. Era exatamente a causa
+//    do erro `Module '"@prisma/client"' has no exported member 'PrismaClient'`.
+// 2. O `datasource` não aceita mais `url`. A URL vive em `prisma.config.ts`, e o
+//    runtime recebe a conexão por driver adapter (`@prisma/adapter-pg`).
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Credential {
+  id            String    @id @default(uuid())
+  encryptedData String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  /// Incrementada a cada `PUT`. Existe desde já porque acrescentar coluna com a
+  /// tabela vazia custa zero, e depois da Fase 1 custaria uma segunda migration
+  /// mais uma mudança no contrato da rota.
+  ///
+  /// Para que serve: o AAD `v2` vai amarrar o blob a `<id>|<version>`, fechando
+  /// o ataque de restaurar o `encryptedData` anterior de uma linha — o cliente
+  /// hoje decifra isso sem erro nenhum, e o dono lê como atual a senha que ele
+  /// acabou de trocar por ter vazado.
+  ///
+  /// ⚠️ Limite honesto: quem escreve no banco restaura o `version` junto com o
+  /// blob. O AAD sozinho NÃO detecta rollback — só detecta se o cliente guardar
+  /// a maior versão que já viu (mesmo mecanismo do pin de `salt`). Quem
+  /// implementar o `v2` sem esse pin terá uma defesa que não defende.
+  version Int @default(1)
+}
+
+/// Configuração do vault do site. **Singleton**: é um vault de um usuário só, e
+/// o `@default(1)` com chave primária é o que garante isso no banco — nunca
+/// passe `id` no insert.
+///
+/// Nenhuma coluna aqui abre o vault sozinha. O que ela dá a quem rouba o banco
+/// é um **oráculo de verificação offline** (testar candidatos de senha contra
+/// `authHash` com argon2id), ao mesmo custo de atacar os ciphertexts que estão
+/// na mesma base. Depois de um vazamento, o que separa o atacante do vault é a
+/// entropia da senha mestra — daí o piso de força na inicialização.
+model VaultConfig {
+  id Int @id @default(1)
+
+  /// Aleatório por vault, servido SEM autenticação de propósito: o cliente
+  /// precisa dele antes de ter qualquer chave. É o que todo vault
+  /// Zero-Knowledge faz.
+  salt String
+
+  /// ⚠️ O cliente tem `MIN_KDF_ITERATIONS` fixo no bundle e RECUSA um valor
+  /// abaixo dele. Sem esse piso, escrita no banco viraria rebaixamento de KDF:
+  /// `UPDATE VaultConfig SET kdfIterations = 1` derruba o custo por palpite de
+  /// 600.000 hashes para 2.
+  kdfIterations Int
+
+  /// argon2id sobre o `authValue` (HKDF-Expand da chave derivada, rótulo
+  /// `...web.auth:v1`). Não é a chave de cifragem e não abre nada.
+  authHash String
+
+  /// `vaultKey` aleatória de 32 bytes, cifrada sob a chave derivada da senha.
+  /// É o envelope: trocar a senha mestra reescreve UMA linha, de forma atômica,
+  /// em vez de recifrar N registros no browser sem transação.
+  wrappedVaultKey String
+
+  /// Sentinela cifrada, conferida ANTES de renderizar a lista. Sem ela, chave
+  /// errada e vault meio-migrado produzem a mesma tela de "nenhum item" —
+  /// e o desfecho realista é o dono recadastrar tudo.
+  keyCheck String
+
+  /// Atraso exponencial no login. Lockout duro seria auto-DoS: há um usuário só.
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Sessão do site, em banco e não em JWT.
+///
+/// ⛔ `id` guarda o **SHA-256 do token do cookie**, nunca o token. O argumento
+/// inteiro a favor de sessão em banco foi "vazar o banco não dá acesso"; gravar
+/// o token cru entrega todas as sessões ativas a quem ler uma linha.
+///
+/// Não existe `tokenVersion`: com sessão em banco, "encerrar todas as sessões"
+/// (e a troca de senha mestra) é `session.deleteMany({})`. Uma coluna que
+/// ninguém lê é convite a alguém achar que há revogação onde não há.
+model Session {
+  id String @id
+
+  /// TTL deslizante, renovado a cada request.
+  expiresAt DateTime
+
+  /// Teto que a renovação NÃO empurra. Sem ele, um cookie roubado dura para
+  /// sempre: basta uma requisição a cada poucos minutos.
+  absoluteExpiresAt DateTime
+
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}

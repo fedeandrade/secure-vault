@@ -1,10 +1,20 @@
 [project]
 name = "secure-vault"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "Gerenciador de senhas local: senha mestra Argon2id, segredos em AES-256-GCM, CLI e TUI."
 readme = "README.md"
+license = { text = "MIT" }
 authors = [
     { name = "Renan Croffi", email = "renancroffi@gmail.com" }
+]
+keywords = ["password-manager", "cryptography", "argon2", "aes-gcm", "cli", "tui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
 ]
 requires-python = ">=3.12"
 dependencies = [
@@ -22,7 +32,13 @@ dependencies = [
 ]
 
 [project.scripts]
-secure-vault = "vault.cli:main"
+# Dois nomes para o mesmo comando: `vault` é o que se digita no dia a dia,
+# `secure-vault` mantém o nome da distribuição (e o que a Fase 0 já instalava).
+vault = "vault.cli.main:main"
+secure-vault = "secure_vault:main"
+
+[project.urls]
+Repository = "https://github.com/ReCroffi/secure-vault"
 
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]
@@ -35,5 +51,56 @@ module-name = "vault"
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "pytest-cov>=6.0.0",
     "ruff>=0.16.5",
 ]
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-q",
+    "--strict-markers",   # marcador com erro de digitação vira erro, não teste ignorado
+    "--strict-config",
+]
+markers = [
+    "postgres: exige um PostgreSQL real; roda apenas se TEST_DATABASE_URL estiver definida",
+    "slow: teste que leva segundos (KDF com custo real)",
+]
+filterwarnings = ["error::DeprecationWarning:vault.*"]
+
+# ---------------------------------------------------------------------------
+# ruff
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "C4",        # comprehensions
+    "SIM",       # simplify
+    "S",         # bandit — análise de segurança
+    "RUF",
+]
+ignore = [
+    "S101",  # assert: legítimo em testes
+    "E501",  # comprimento de linha: o formatter já cuida
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Testes usam senhas fixas de propósito; não são credenciais de verdade.
+"tests/**" = ["S105", "S106", "S107"]
+"migrations/**" = ["S608"]  # SQL literal nas migrations é intencional e sem entrada de usuário
+
+[tool.ruff.lint.isort]
+known-first-party = ["vault", "secure_vault"]

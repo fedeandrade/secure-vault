@@ -11,5 +11,28 @@ services:
     volumes:
       - vault_pgdata:/var/lib/postgresql/data
 
+  # Banco do vault WEB, separado do vault do CLI por decisão de 22/09/2026.
+  #
+  # Por que um serviço próprio e não um segundo database no container acima:
+  # script de `initdb.d` só roda na PRIMEIRA criação do volume, e `vault_pgdata`
+  # já existe nas máquinas onde o CLI roda — o database simplesmente não seria
+  # criado, em silêncio. Serviço separado também espelha produção, onde o site
+  # vai para um Postgres hospedado e o CLI continua no banco local.
+  #
+  # Os dois vaults NÃO compartilham formato de blob hoje (o Python cifra a
+  # credencial inteira sob AAD; o web grava `iv.ct`). Unificar é a Fase 4.
+  postgres-web:
+    image: postgres:16
+    container_name: secure-vault-web-db
+    environment:
+      POSTGRES_USER: ${WEB_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${WEB_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${WEB_POSTGRES_DB}
+    ports:
+      - "${WEB_POSTGRES_PORT}:5432"
+    volumes:
+      - vault_web_pgdata:/var/lib/postgresql/data
+
 volumes:
   vault_pgdata:
+  vault_web_pgdata:

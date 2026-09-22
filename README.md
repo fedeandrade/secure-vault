@@ -1,132 +1,159 @@
 # Secure Vault
 
-![CI](https://github.com/ReCroffi/secure-vault/actions/workflows/ci.yml/badge.svg)
-
-<!-- TODO: se quiser trocar o nome do projeto, troca aqui e no diretório/repo -->
-
-> Gerenciador de senhas local, com criptografia ponta a ponta, construído para aprofundar conhecimentos de segurança e aprimorar Python na prática.
+> Gerenciador de senhas local: a senha mestra nunca é armazenada, e o banco de
+> dados é inútil para quem não a tiver.
 
 ## Sobre o projeto
 
-Sistema de gerenciamento e geração de senhas seguras, desenvolvido como projeto de portfólio. Permite gerar senhas fortes, armazená-las de forma criptografada e recuperá-las mediante autenticação com uma senha mestra — sem que a senha mestra ou as senhas armazenadas jamais sejam persistidas em texto puro.
+Sistema de gerenciamento e geração de senhas seguras. Gera senhas fortes,
+armazena-as criptografadas e as recupera mediante autenticação com uma senha
+mestra — sem que a senha mestra ou as senhas armazenadas jamais toquem o disco em
+texto puro.
+
+Tudo roda localmente: não há servidor, conta, sincronização nem telemetria. O
+único estado é o banco PostgreSQL que você controla.
 
 ## Motivação
 
-<!-- TODO: por que você está construindo isso? o que quer aprender/demonstrar com esse projeto? -->
+<!-- TODO (Renan): duas ou três frases sobre por que você construiu isso e o que
+     quis demonstrar. É a única seção que ninguém pode escrever por você. -->
 
 ## Arquitetura de segurança
 
-Esta é a parte mais crítica do projeto — a que diferencia um "CRUD com senha" de um gerenciador de senhas de verdade.
+É a parte que separa um "CRUD com senha" de um gerenciador de senhas de verdade.
 
-- **Senha mestra nunca é armazenada.** Apenas um hash dela é persistido (para autenticação), gerado com uma função de derivação de chave resistente a força bruta (Argon2id).
-- **Chave de criptografia é derivada em memória**, a partir da senha mestra + um salt único, e nunca é persistida em disco.
-- **Toda credencial salva é criptografada simetricamente** (AES via a biblioteca `cryptography`) antes de tocar o banco de dados. Sem a senha mestra correta, os dados no Postgres são inúteis mesmo para quem tiver acesso direto ao banco.
-- **Geração de senhas** usa o módulo `secrets` do Python (CSPRNG), nunca `random`.
-- Cada segredo criptografado usa **salt/nonce único** — nunca reaproveitado entre registros.
+| Garantia | Como é obtida | Onde está no código |
+|---|---|---|
+| A senha mestra nunca é armazenada | Só o hash **Argon2id** (formato PHC, salt próprio) é persistido | [`core/master_password.py`](src/vault/core/master_password.py) |
+| A chave de criptografia nunca toca o disco | Derivada em memória a cada destravamento, a partir da senha mestra + salt do vault | [`core/kdf.py`](src/vault/core/kdf.py) |
+| Todo segredo é cifrado antes do banco | **AES-256-GCM** (AEAD), blob versionado | [`core/crypto.py`](src/vault/core/crypto.py) |
+| Nonce único por registro **e por gravação** | `secrets.token_bytes(12)` a cada operação de cifragem | `crypto.encrypt` |
+| Adulteração do banco é detectada | A tag GCM autentica o texto cifrado; qualquer bit alterado falha | `crypto.decrypt` |
+| Blob não pode ser movido entre campos | *Associated data* distinta por campo (senha / notas / TOTP) | `crypto.AAD_*` |
+| Senhas geradas são imprevisíveis | `secrets` (CSPRNG do SO), nunca `random` | [`core/generator.py`](src/vault/core/generator.py) |
+| Um vault que não abre é detectado no login | Sentinela `key_check` cifrada, conferida antes de tocar dado real | `master_password.unlock` |
+| Subir o custo do KDF não quebra vaults antigos | Os parâmetros de KDF são gravados **no vault**, não fixados no código | `vault_config.kdf_*` |
 
-> Aviso de escopo: este projeto tem fins educacionais/portfólio. Não implementa proteções contra memory dumping, side-channel attacks ou hardening de SO. Isso é declarado intencionalmente — veja a seção "Limitações conhecidas".
+### Três decisões que valem explicação
+
+**Os parâmetros do Argon2id ficam no banco, não no código.** Se estivessem no
+código, o dia em que alguém subisse `time_cost` para endurecer o KDF, todo vault
+já existente passaria a derivar uma chave diferente — e os dados ficariam
+ilegíveis, sem nenhuma mensagem dizendo por quê. Gravados no vault, um vault
+antigo abre com os parâmetros dele e um vault novo nasce com os novos.
+
+**Separação de domínio por HKDF.** A senha mestra alimenta dois usos: o hash de
+autenticação e a chave de criptografia. Eles já usam salts diferentes, o que
+bastaria — mas "não são iguais por acidente do salt" é uma garantia frágil.
+Passar a saída do Argon2 por um HKDF com rótulo fixo torna a separação explícita.
+
+**AES-GCM em vez de Fernet.** Fernet é AES-128-CBC + HMAC; usaria só metade da
+nossa chave de 256 bits e não tem *associated data*. Com GCM, cada texto cifrado
+fica amarrado ao campo onde nasceu: um blob copiado da coluna de senha para a de
+notas simplesmente não abre.
+
+> **Escopo:** projeto educacional/portfólio. Não implementa proteção contra
+> memory dumping, ataques de canal lateral ou hardening de sistema operacional.
+> Ver "Limitações conhecidas".
 
 ## Stack tecnológica
 
 | Camada | Escolha | Motivo |
 |---|---|---|
-| Linguagem | Python 3.12+ (gerenciado via `uv`) | `requires-python = ">=3.12"` no `pyproject.toml` |
-| Empacotamento/deps | `uv` | resolve dependências, lockfile (`uv.lock`) e venv numa ferramenta só |
-| Banco de dados | PostgreSQL | Modelagem relacional, migrations, mostra domínio de SQL |
-| Driver do banco | `psycopg` (v3, extra `binary`) | driver moderno, mantido ativamente, com suporte a `async` se precisar no futuro |
-| ORM / migrations | SQLAlchemy + Alembic | Padrão de mercado; migrations versionadas (Alembic entra na Fase 2) |
-| Config | `pydantic-settings` | leitura tipada de variáveis de ambiente (`.env`) |
-| Criptografia | `cryptography` (AES / Fernet), `argon2-cffi` (hash + derivação de chave) | Bibliotecas auditadas, nunca "rolar o próprio crypto" |
-| CLI | `typer` | CLI com help automático, subcomandos, boa DX |
-| Força de senha | `zxcvbn` | estimativa de entropia, não só regra de tamanho |
-| Interface (fase 9) | `textual` (TUI) | Visual mais rico sem sair do terminal |
-| Extras (fase 10, sugestão futura) | `pyperclip`, `pyotp` | copiar senha na CLI (`get`) e clipboard com auto-clear, 2FA via TOTP — a TUI já copia a senha gerada via `App.copy_to_clipboard` nativo do Textual, sem essa lib |
-| Testes / lint | `pytest`, `ruff` (dev) | Padrão do ecossistema |
+| Linguagem | Python 3.12+ (via `uv`) | `requires-python = ">=3.12"` |
+| Empacotamento | `uv` | resolução, lockfile e venv numa ferramenta só |
+| Banco | PostgreSQL 16 | modelagem relacional, constraints reais, migrations |
+| Driver | `psycopg` v3 (`binary`) | driver moderno, mantido, com caminho para `async` |
+| ORM / migrations | SQLAlchemy 2 + Alembic | `Mapped[...]` tipado; migrations versionadas |
+| Config | `pydantic-settings` | leitura tipada e validada de `.env` |
+| Criptografia | `cryptography` (AES-256-GCM, HKDF), `argon2-cffi` | bibliotecas auditadas; nunca "rolar o próprio crypto" |
+| CLI | `typer` + `rich` | subcomandos, help automático, saída legível |
+| Força de senha | `zxcvbn` | estimativa de tentativas, não regra de tamanho |
+| TUI | `textual` | interface rica sem sair do terminal |
+| Extras | `pyperclip`, `pyotp` | clipboard com auto-clear, TOTP (RFC 6238) |
+| Testes / lint | `pytest`, `ruff` | padrão do ecossistema |
 
 ## Estrutura do projeto
 
 ```
 secure-vault/
 ├── src/vault/
-│   ├── cli/        # comandos da interface de linha de comando
-│   ├── core/        # regras de negócio: criptografia, geração de senha, autenticação
-│   ├── db/          # models SQLAlchemy, repositórios, sessão do banco
-│   ├── config/      # carregamento de configuração e variáveis de ambiente
-│   └── tui/         # interface interativa (Textual) — um arquivo por tela em tui/screens/
+│   ├── cli/          # comandos Typer (main.py) e sessão interativa (shell.py)
+│   ├── core/         # domínio: crypto, kdf, master_password, generator,
+│   │                 #          strength, totp, session, clipboard
+│   ├── db/           # models, engine, session, repository, migrate
+│   ├── tui/          # interface textual (Fase 9)
+│   ├── config/       # settings tipadas
+│   └── exceptions.py # hierarquia de erros do domínio
 ├── tests/
-│   ├── unit/
-│   └── integration/
+│   ├── unit/         # crypto, kdf, gerador, força, TOTP, sessão, settings
+│   └── integration/  # vault, repositório, CLI, migrations (Postgres)
 ├── migrations/       # Alembic
-├── docs/
-├── scripts/
-├── .env.example
-└── README.md
+├── docs/TUTORIAL.md  # explicação completa do que existe e por quê
+└── .env.example
 ```
 
 ## Como rodar
 
-Pré-requisitos: [uv](https://docs.astral.sh/uv/) instalado e um PostgreSQL acessível.
+Pré-requisitos: [uv](https://docs.astral.sh/uv/) e um PostgreSQL acessível.
 
-```
+```bash
 git clone git@github.com:ReCroffi/secure-vault.git
 cd secure-vault
-uv sync                    # cria o venv e instala tudo que está travado no uv.lock
-cp .env.example .env       # preencher DATABASE_URL com suas credenciais locais
+uv sync --all-groups
+cp .env.example .env          # preencher DATABASE_URL
+docker compose up -d          # ou aponte para um Postgres que você já tenha
+uv run vault db upgrade       # aplica as migrations
+uv run vault init             # cria o vault e define a senha mestra
 ```
 
-### Comandos da CLI
+## Comandos
 
+```bash
+vault init                    # cria o vault (uma vez por banco)
+vault status                  # parâmetros de KDF, cifra, total de credenciais
+vault add github renan -g     # guarda uma credencial com senha gerada
+vault list                    # lista (sem pedir a senha mestra: nada é decifrado)
+vault search git              # busca por serviço, login ou URL
+vault get github --login renan  # copia a senha, com auto-clear
+vault get github --show       # exibe em vez de copiar
+vault update 1 --generate     # troca a senha por uma gerada
+vault delete 1                # apaga (pede confirmação)
+vault passwd                  # troca a senha mestra e re-cifra todo o vault
+vault generate -l 32 -n 5     # gera senhas (não precisa de banco)
+vault strength 'senha'        # avalia a força (não precisa de banco)
+vault totp enable             # ativa segundo fator na senha mestra
+vault shell                   # sessão interativa com timeout
+vault tui                     # interface visual
+vault db upgrade / db check   # migrations e teste de conexão
+vault destroy                 # apaga o vault inteiro (pede senha + APAGAR TUDO)
 ```
-uv run secure-vault init                          # cria o vault, define a senha mestra
-uv run secure-vault add <service_name> <username>  # guarda uma credencial (pede a senha do serviço)
-uv run secure-vault get <service_name>             # mostra as credenciais de um serviço, com a senha decifrada
-uv run secure-vault list                           # lista id, serviço e login de tudo, sem revelar senha
-uv run secure-vault list --search <termo>          # lista só os serviços cujo nome contém o termo (sem diferenciar maiúscula/minúscula)
-uv run secure-vault update <id>                    # troca a senha de uma credencial (mostra de quem antes)
-uv run secure-vault delete <id>                    # apaga uma credencial (pede confirmação)
-uv run secure-vault generate                       # gera uma senha aleatoria (nao salva nada)
-```
 
-`generate` aceita `--length` e as flags `--use-uppercase`/`--use-lowercase`/`--use-digits`/`--use-symbols` (e seus opostos `--no-use-*`), todas ligadas por padrão. Sai com código 1 se todas vierem desligadas. Ver `uv run secure-vault generate --help`.
+Nenhuma senha é aceita como argumento de linha de comando: ela apareceria no
+histórico do shell e na lista de processos. Tudo é lido com `getpass`. Para CI e
+scripts existem `VAULT_MASTER_PASSWORD` (senha atual), `VAULT_NEW_MASTER_PASSWORD`
+(apenas para `vault passwd`) e `VAULT_TOTP_CODE`.
 
-`add` e `update` mostram a força da senha digitada (nota de 0 a 4, via `zxcvbn`) e insistem enquanto ela vier fraca (nota abaixo de 3) — a menos que você confirme explicitamente que quer usar mesmo assim.
-
-Todo comando que acessa dados pede a senha mestra. Use `list` para descobrir o `id` de uma credencial antes de `update`/`delete`.
+Comandos destrutivos — `delete`, `destroy` e `passwd` — exigem a senha mestra.
 
 ### Interface TUI
 
-```
-uv run secure-vault tui
-```
-
 ![Demo da TUI: login, listar, buscar, adicionar (com gerador de senha) e apagar credenciais](assets/secure-vault-demo.gif)
-
-Abre uma interface interativa (Textual) que fica com a sessão aberta — pede a senha mestra uma vez só, ao entrar, em vez de a cada comando como na CLI.
-
-| Tela | Atalhos | O que faz |
-|---|---|---|
-| Login | `Enter` | autentica e deriva a chave de sessão |
-| Lista | `a` adicionar · digitar filtra ao vivo · `Enter` na linha abre o detalhe | lista/busca credenciais (ordenadas por id) |
-| Detalhe | `e` editar senha · `d` apagar · `Esc` voltar | mostra a credencial com a senha decifrada |
-| Adicionar/Editar | `Enter` salva · botão "Gerar senha segura" preenche o campo com `generate_password(16)` e copia pro clipboard | salva; se a senha for fraca, avisa e pede confirmação (mesma regra do `add`/`update` da CLI) |
-| Confirmar (modal) | `s` sim · `n`/`Esc` não | usado antes de apagar |
-
-O botão de gerar senha reaproveita a mesma função da CLI (`generate_password`, ver Fase 6) — sem duplicar lógica. Um atalho de teclado (`g`) foi cogitado primeiro, mas descartado: um `Input` com foco captura toda tecla imprimível antes que ela vire atalho de tela.
 
 ## Testes
 
-Os testes rodam contra um banco isolado (`vault_test`), no mesmo Postgres do ambiente de desenvolvimento — nunca contra o banco real.
-
-```
-docker exec secure-vault-db psql -U croffiadm -d postgres -c "CREATE DATABASE vault_test;"   # só na primeira vez
-# preencher TEST_DATABASE_URL no .env, apontando pro vault_test
-DATABASE_URL=<TEST_DATABASE_URL do seu .env> uv run alembic upgrade head                      # só na primeira vez / após novas migrations
-uv run pytest tests/ -v
+```bash
+uv run pytest                                     # 250 testes, sem dependências externas
+uv run ruff check .
 ```
 
-A fixture `patch_session` (`tests/conftest.py`) troca a sessão do banco pela de teste automaticamente e limpa as tabelas antes **e** depois de cada teste — não precisa fazer nada manual entre execuções. O CI (GitHub Actions) roda essa mesma suite a cada push/PR em `main`/`develop`.
+A suíte roda inteira em SQLite temporário — sem Docker, sem serviço, sem `.env`.
+Os testes que exigem um PostgreSQL real (migrations, `CHECK`, `timestamptz`) são
+marcados e pulados quando não há banco; para incluí-los:
 
-`tests/tui/` cobre a interface Textual com o harness `Pilot` (`app.run_test()`), simulando teclas/foco em vez de rodar um terminal de verdade: login (senha certa/errada), listar, buscar ao vivo, adicionar, ver detalhe, editar senha e apagar com confirmação.
+```bash
+TEST_DATABASE_URL=postgresql+psycopg://<USUARIO>:<SENHA>@localhost:5432/secure_vault uv run pytest
+```
 
 ## Roadmap
 
@@ -136,35 +163,48 @@ A fixture `patch_session` (`tests/conftest.py`) troca a sessão do banco pela de
 - [x] Fase 3 — Criação do vault (senha mestra, salt, hash)
 - [x] Fase 4 — Autenticação e derivação de chave em memória
 - [x] Fase 5 — CRUD de credenciais criptografadas via CLI
-- [x] Testes automatizados (Fases 0-5) — banco de testes isolado, cobertura de `credentials.py`, CI no GitHub Actions
 - [x] Fase 6 — Gerador de senha configurável
 - [x] Fase 7 — Indicador de força de senha
 - [x] Fase 8 — Busca/filtro de credenciais
-- [x] Fase 9 — Interface TUI (`textual`), com testes automatizados cobrindo todas as telas
-- [ ] Fase 10 (sugestão futura, fora do escopo fechado do projeto) — Extras: timeout de sessão, clipboard com auto-clear, 2FA na senha mestra
-
-<!-- TODO: acompanhar o progresso marcando os checkboxes conforme avança -->
+- [x] Fase 9 — Interface TUI (`textual`)
+- [x] Fase 10 — Timeout de sessão, clipboard com auto-clear, 2FA na senha mestra
 
 ## Limitações conhecidas
 
-Este projeto tem fins educacionais/portfólio — as limitações abaixo são conhecidas e declaradas intencionalmente, não pontos cegos:
+Declaradas de propósito. Um projeto de segurança que não lista o que **não**
+protege está escondendo o modelo de ameaça.
 
-- **Sem proteção contra memory dumping ou side-channel attacks.** A chave de criptografia vive em memória enquanto o processo roda; um ataque com acesso ao processo/RAM não é mitigado.
-- **Sem hardening de SO.** Não há sandboxing, restrição de permissões de arquivo além do padrão, ou proteção contra debugger anexado ao processo.
-- **Sem timeout de sessão.** Na TUI, a chave derivada fica válida por toda a sessão do processo, sem expirar por inatividade (item do backlog — ver Fase 10).
-- **Sem 2FA na senha mestra.** Autenticação depende só da senha mestra (item do backlog — ver Fase 10).
-- **Sem rate-limiting/lockout de tentativas.** A resistência a força bruta vem do custo computacional do Argon2id, não de bloqueio após N tentativas erradas.
-- **Single-user.** Um cofre = uma senha mestra; não há suporte a múltiplos usuários/perfis no mesmo banco.
-- **Busca (`ILIKE`) aceita coringas de `LIKE` sem escape.** Digitar `%` ou `_` no termo de busca funciona como coringa do SQL, não como caractere literal — comportamento aceito, não validado.
-- **Sem clipboard com auto-clear.** O gerador de senha na TUI já copia a senha gerada pro clipboard (`App.copy_to_clipboard`, via OSC 52 — não funciona no Terminal.app do macOS), mas sem expirar sozinho depois de um tempo. `get`/detalhe continuam só mostrando a senha decifrada na tela, sem opção de copiar. Limpeza automática do clipboard é item do backlog (Fase 10).
+1. **Nome do serviço, login e URL ficam legíveis no banco.** Só os segredos
+   (senha, notas, segredo TOTP) são cifrados. Cifrar os metadados esconderia mais
+   de quem tem acesso direto ao banco, mas tornaria a busca impossível sem baixar
+   e decifrar a tabela inteira. É uma troca consciente.
+2. **A chave existe em memória enquanto o processo roda.** `bytearray` zerado ao
+   trancar a sessão reduz a janela, mas o CPython pode ter feito cópias fora do
+   nosso alcance, e a página pode ir para o swap. Não há proteção contra memory
+   dumping.
+3. **O TOTP não protege a cifra, protege o acesso.** O segredo TOTP é cifrado com
+   a chave derivada da senha mestra — logo, quem tem a senha mestra pode derivar a
+   chave e gerar códigos. O segundo fator barra quem descobriu a senha mas não tem
+   o autenticador; não barra quem já tem o banco e a senha.
+4. **Sem proteção contra canal lateral.** As comparações críticas usam
+   `compare_digest`, mas não há defesa contra ataques de cache ou temporização
+   mais finos.
+5. **Sem limite de tentativas.** O custo do Argon2id (~200 ms) é a única barreira
+   contra força bruta local. Não há bloqueio após N erros.
+6. **A segurança do banco é sua.** O vault não protege contra alguém que apague o
+   banco. Faça backup — e note que um backup do banco sem a senha mestra é inútil,
+   o que é o objetivo, mas também significa que perder a senha mestra é perder tudo.
+7. **`vault destroy` apaga tudo, e é irreversível.** Ele existe para que
+   recomeçar seja um comando explícito em vez da instrução de dropar o banco na
+   mão — que é como se apaga o banco errado. A confirmação exige a senha mestra
+   **e** digitar `APAGAR TUDO`, mas depois disso não há como voltar atrás.
 
 ## Licença
 
-Distribuído sob a licença MIT — veja [`LICENSE`](LICENSE) para o texto completo.
+MIT — ver [LICENSE](LICENSE).
 
 ## Autor
 
-**Renan Croffi**
+Renan Croffi
 
-- GitHub: [@ReCroffi](https://github.com/ReCroffi)
-- LinkedIn: [linkedin.com/in/renancroffi](https://linkedin.com/in/renancroffi)
+<!-- TODO (Renan): LinkedIn / GitHub / contato -->

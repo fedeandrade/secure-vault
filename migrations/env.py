@@ -1,55 +1,51 @@
-# Script do Alembic (gerado por `alembic init`, editado so nos pontos abaixo
-# ligados ao projeto). Roda toda vez que se faz `alembic upgrade`/`downgrade`
-# ou `alembic revision --autogenerate` (que compara `target_metadata` com o
-# schema atual do banco pra gerar uma migration nova).
+"""Ambiente do Alembic.
+
+Mudanças em relação ao gerado pelo `alembic init`:
+
+- A URL vem de `get_settings()` (função) em vez do objeto `settings` global, que
+  não existe mais — ele era instanciado no import e quebrava qualquer comando sem
+  `.env`.
+- Quem chamar as migrations pela aplicação (`vault db upgrade`) já injeta a URL
+  no `Config`; aqui só preenchemos se ainda estiver com o placeholder do `.ini`.
+- `compare_type=True`: sem isso o autogenerate ignora mudança de tipo de coluna,
+  e uma migration "vazia" esconderia, por exemplo, a troca de `DateTime` por
+  `DateTime(timezone=True)`.
+"""
+
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from vault.config.settings import settings
-from vault.db import models  # noqa: F401
+from vault.config.settings import get_settings
+from vault.db import models  # noqa: F401  (importado pelo efeito de registrar os models)
 from vault.db.base import Base
+from vault.db.migrate import escape_url_for_alembic
 
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
+
+# A URL só é buscada na configuração se quem chamou não a definiu. O placeholder
+# `driver://user:pass@localhost/dbname` é o que vem no alembic.ini de fábrica.
+_url_atual = config.get_main_option("sqlalchemy.url", "")
+if not _url_atual or _url_atual.startswith("driver://"):
+    config.set_main_option(
+        "sqlalchemy.url", escape_url_for_alembic(get_settings().require_database_url())
+    )
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
 target_metadata = Base.metadata
-
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in 'offline' mode.
-
-    This configures the context with just a URL
-    and not an Engine, though an Engine is acceptable
-    here as well.  By skipping the Engine creation
-    we don't even need a DBAPI to be available.
-
-    Calls to context.execute() here emit the given string to the
-    script output.
-
-    """
-    url = config.get_main_option("sqlalchemy.url")
+    """Modo offline: emite SQL para stdout, sem conectar."""
     context.configure(
-        url=url,
+        url=config.get_main_option("sqlalchemy.url"),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        compare_type=True,
     )
 
     with context.begin_transaction():
@@ -57,12 +53,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
-
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
+    """Modo online: conecta e aplica."""
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -70,7 +61,14 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+            # Necessário para que ALTER TABLE funcione no SQLite, que não suporta
+            # a maior parte dos ALTERs — o Alembic recria a tabela por baixo.
+            render_as_batch=connection.dialect.name == "sqlite",
+        )
 
         with context.begin_transaction():
             context.run_migrations()
