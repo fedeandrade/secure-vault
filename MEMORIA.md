@@ -110,20 +110,45 @@ tentar de novo; é permissão, não rede.
 | Branch | `feature/completar-fases-04-10`, rastreando `fork/` |
 | PR | **[#19](https://github.com/ReCroffi/secure-vault/pull/19)** → `ReCroffi/secure-vault:main` |
 
-⚠️ **O PR #19 está em CONFLITO e não pode ser mesclado como está.** Medido com
-`git merge-tree --write-tree` (a seco, sem tocar na árvore): **20 arquivos**
-conflitam, entre eles `crypto.py`, `master_password.py`, `models.py`,
-`tui/app.py`, `conftest.py`, `migrations/env.py` e `pyproject.toml`.
+⛔ **O PR #19 NÃO é mesclável, e o motivo não é conflito de texto.**
 
-**A causa não é briga de desenho, é sobreposição:** o commit `89f3da9` do Renan
-("docs: comenta o codigo do projeto pra facilitar retomada futura") comentou
-**o código inteiro**, tocando quase todo arquivo que esta branch reescreveu. São
-`origin/main` 5 commits à frente do merge-base `3bdf278`, e esta branch 7.
+⚠️ ~~"A causa é sobreposição: o `89f3da9` do Renan comentou o código inteiro.
+`origin/main` está 5 commits à frente do merge-base."~~ **Errado, e a correção
+importa:** aquilo foi lido de uma listagem truncada. Medido com
+`git rev-list --count 3bdf278..origin/main`: **`origin/main` tem 60 commits**
+após o merge-base, não 5. Esta branch tem 8.
 
-**Ao resolver, o risco é dos dois lados:** deixar cair os comentários do Renan, ou
-deixar cair as correções de segurança daqui (guard da migration, exclusão física,
-segredo sem quebra de linha). Resolver arquivo a arquivo, com a suíte rodando a
-cada um, e `.claude/gate.json` verde no fim.
+**São duas implementações independentes das fases 4 a 10**, partindo do mesmo
+ponto `3bdf278` (Merge PR #5) por caminhos diferentes:
+
+| | `origin/main` (Renan) | esta branch |
+|---|---:|---:|
+| commits desde `3bdf278` | 60 | 8 |
+| arquivos `src/` + `tests/` | 39 | 47 |
+| arquivos de teste | 10 | 16 |
+| cifra dos segredos | **Fernet** (AES-128-CBC + HMAC) | **AES-256-GCM** com AAD |
+| parâmetros do KDF | fixos no código | configuráveis, gravados por vault |
+| `key_check` | não tem | tem |
+| TOTP | não tem | credencial + senha mestra |
+| migrations | 1 | 3, com guard |
+| TUI | **6 telas** em `tui/screens/`, com suíte própria | 1 arquivo |
+| Zero-Knowledge · vault web | não · não | sim · sim (`web/`) |
+
+**Cada lado tem o que o outro não tem.** A TUI do Renan é bem mais rica; esta
+branch tem a criptografia mais forte, o segundo fator e o Zero-Knowledge.
+
+⛔ **Merge mecânico não serve, e tentá-lo é perigoso.** Em `crypto.py` um lado é
+`Fernet(fernet_key).encrypt(...)` e o outro é `AESGCM(key).encrypt(nonce, pt, aad)`.
+Resolver arquivo a arquivo derruba 60 commits do Renan **ou** rebaixa a cifra de um
+gerenciador de senhas para AES-128-CBC, perdendo `key_check` e TOTP junto.
+
+**Decisão pendente do Felipe (e provavelmente do Renan):** (1) esta branch vira a
+base e a TUI de 6 telas é portada por cima; (2) `main` continua a base e o
+Zero-Knowledge é portado para dentro dela; (3) conversa entre os dois antes de
+qualquer integração. **Nenhum agente deve escolher isso sozinho.**
+
+O PR #19 foi retitulado `[NÃO MESCLAR AINDA]` e a descrição corrigida — a primeira
+versão dela repetia o erro dos "5 commits".
 
 ## ⛔ A migração ZK NÃO converte vault existente — e agora recusa em vez de quebrar
 
