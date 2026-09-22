@@ -93,5 +93,8 @@ jobs:
       - name: Confere o lint
         run: npx eslint
 
+      - name: Roda os testes do site
+        run: npx vitest run
+
       - name: Compila o site
         run: npx next build

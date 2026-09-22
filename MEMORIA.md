@@ -452,12 +452,100 @@ qual base — `origin/main` é a única viva.
 - O venv do projeto fica em `.venv`; os executáveis instalados são
   `.venv/Scripts/vault.exe` e `.venv/Scripts/secure-vault.exe`.
 
+## Documentação, gate e harness — reorganizados em 22/09/2026
+
+Pedido do Felipe: *"atualize a memória do projeto, CLAUDE.md, spec, roadmap,
+harness, hook"*. O que passou a existir, e o que cada um responde:
+
+| Arquivo | Responde |
+|---|---|
+| [`CLAUDE.md`](CLAUDE.md) — **novo** | o que uma sessão **não deduz** lendo o repo: quem tem permissão de escrita, por que o CI não roda, as armadilhas medidas |
+| [`docs/SPEC.md`](docs/SPEC.md) — **novo** | o contrato normativo: modelo de ameaça, invariantes que nenhum refactor pode quebrar, e a prova executável de cada um |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) — **novo** | onde cada frente está, com prova ou dizendo que não tem |
+| `README.md` | continua sendo a porta de entrada — **corrigido**, ver abaixo |
+| `MEMORIA.md` (este) | o histórico medido e o que deu errado |
+
+### ⛔ O README estava FALSO em 5 pontos desde a migração ZK
+
+Ele é a cara pública do projeto e prometia o que o código deixou de fazer:
+
+1. *"Blob não pode ser movido entre campos — AAD distinta por campo (senha /
+   notas / TOTP)"* — as colunas não existem mais; há **um** blob por credencial.
+2. *"um blob copiado da coluna de senha para a de notas simplesmente não abre"* —
+   mesma coisa, citava colunas mortas.
+3. *"`vault list` — sem pedir a senha mestra: nada é decifrado"* — **hoje pede**.
+   No ZK o nome do serviço está dentro do blob.
+4. *"250 testes"* — são 255 passando + 12 pulados.
+5. ⚠️ **A limitação nº 1 virou o CONTRÁRIO.** Ela dizia *"nome do serviço, login
+   e URL ficam legíveis no banco"*. Hoje nada é legível — e a limitação real é a
+   oposta: buscar custa O(n) decifragens e **não há índice possível**.
+
+Os cinco foram corrigidos. O nº 5 ficou com a versão antiga `~~riscada~~` no
+próprio README, porque quem criou vault antes daquela data precisa saber que o
+formato mudou e que a migration **recusa** converter.
+
+### O gate passou a cobrir os DOIS lados
+
+`.claude/gate.json` agora roda `node scripts/gate.mjs`, que mede Python **e** web:
+
+```
+  ok   │    263ms │ python · ruff
+  ok   │  14301ms │ python · pytest
+  ok   │   2566ms │ web · tsc
+  ok   │   3162ms │ web · eslint
+  ok   │   2688ms │ web · vitest
+  ok   │   6031ms │ web · next build
+```
+
+~29s no total, contra 150s de `timeoutMs` e 180s do hook `Stop`.
+
+**Por que script e não `a && b && c` no `gate.json`:** o hook roda com
+`shell: true` (cmd.exe no Windows), e o primeiro `&&` que falha **esconde tudo
+que vem depois** — você conserta o lint e só descobre o teste quebrado no turno
+seguinte. O script roda todos os passos e mostra os dois lados.
+
+✅ **Provado que o gate REPROVA, não só que passa.** Fixei o IV do AES-GCM em
+zeros (a falha mais séria possível nesse modo) e rodei: **exit 1**, apontando
+`web · vitest`. Restaurado o arquivo: **exit 0**. Gate que nunca foi visto
+reprovando é torcida, não prova.
+
+⚠️ **Duas armadilhas do Node 24 no caminho**, e as duas se contradizem:
+`spawnSync("npx.cmd", […])` **sem** shell devolve `EINVAL` (proteção da
+CVE-2024-27980); **com** `shell: true` mais lista de argumentos, dispara
+`DEP0190` avisando que os argumentos são concatenados sem escape. A saída é
+**string única com `shell: true`** — e só é segura aqui porque todo comando no
+arquivo é literal. Se um dia alguém montar comando com valor vindo de fora,
+vira injeção.
+
+### O site ganhou harness de teste
+
+`vitest` instalado, `web/src/lib/crypto.test.ts` com **7 testes**. A Fase 1
+exigia teste que inspeciona payload e teste negativo — **sem runner, ela não
+conseguia fechar pelos próprios critérios de aceite**.
+
+Dois testes documentam DEFEITO, de propósito, e estão marcados `⚠️ HOJE`:
+a chave sai `extractable: true` (um XSS faz `exportKey`) e o blob é `iv.ct` sem
+marcador de versão. **Quando a Fase 1 quebrá-los é progresso** — mas o teste tem
+de ser REESCRITO para a garantia nova, nunca apagado.
+
+Junto subiu `@types/node` de `^20` para `^22`: o vitest 5 exige, e `^20` já
+estava vencido — o runtime local é Node 24 e o CI é 22.
+
+### Mesclado na main do fork
+
+`5883822` — merge `--no-ff` de 18 commits em `fedeandrade/secure-vault@main`,
+com a suíte verde depois do merge. **Não há deploy automático** (não existe
+`vercel.json`; só o `ci.yml`), então mesclar não expôs nada ao público.
+
+⛔ **O PR #19, contra `ReCroffi`, continua aberto e só o Renan pode mesclar** —
+medido: `permissions.push = false` para o Felipe naquele repo.
+
 ## Pendências
 
 - [ ] **Fase 1 do site, em código** — derivação HKDF com chave não-exportável,
       envelope `wrappedVaultKey`, sessão em banco, piso de KDF, init fora do
-      HTTP, blob `v1.`, `keyCheck`, ordem da rota de login, CSP, runner de
-      teste. O schema já está pronto; falta o resto. **Enquanto não fechar, o
+      HTTP, blob `v1.`, `keyCheck`, ordem da rota de login, CSP. O schema e o
+      **runner de teste** já estão prontos; falta o resto. **Enquanto não fechar, o
       site não pode ir ao ar.**
 - [ ] **Fase 3 — CRUD na TUI.** `src/vault/tui/app.py` é só leitura; faltam
       adicionar, editar e apagar.
