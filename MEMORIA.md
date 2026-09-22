@@ -150,6 +150,46 @@ qualquer integração. **Nenhum agente deve escolher isso sozinho.**
 O PR #19 foi retitulado `[NÃO MESCLAR AINDA]` e a descrição corrigida — a primeira
 versão dela repetia o erro dos "5 commits".
 
+## ✅ `origin/main` foi integrado localmente em 22/09/2026 — e o que ficou de fora
+
+Decisão do Felipe: integrar **local**, sem depender do Renan (a conta dele não
+mescla naquele repositório). `git merge origin/main`, 20 conflitos resolvidos.
+
+**Regra da resolução: onde as duas arquiteturas colidiram, esta branch venceu.**
+Não por preferência — por segurança medida. `main` cifra com Fernet
+(AES-128-CBC + HMAC), sem `key_check` e sem TOTP; aqui é AES-256-GCM com AAD,
+KDF gravado por vault, sentinela de chave e segundo fator. Rebaixar isso num
+gerenciador de senhas não é "resolver conflito", é regressão.
+
+**O que veio do `main` e ficou:**
+
+| | Por quê |
+|---|---|
+| `.github/workflows/ci.yml` | esta branch **não tinha CI**. E ele roda Postgres real, o que destrava os 12 testes que aqui ficam pulados. Acrescentei o passo `ruff check .` para bater com o `.claude/gate.json` — sem isso o CI aprovaria o que a trava local reprova. |
+| `assets/secure-vault-demo.gif` + seção no README | demo da TUI |
+| docstring de `src/vault/db/base.py` | comentário do Renan que continua verdadeiro nesta arquitetura |
+| `HANDOFF.md` no `.gitignore` | idem |
+| `pytest-asyncio` | dependência dos testes de TUI dele |
+
+**O que ficou FORA, e onde encontrar:**
+
+- `src/vault/db/credentials.py` e `tests/integration/test_credentials.py` —
+  **removidos.** É a API antiga (`save_credential(service_name, login,
+  encrypted_password)`, sem chave e sem sessão), substituída por
+  `db/repository.py`.
+- `src/vault/tui/screens/` (6 telas, 358 linhas) e `tests/tui/` (6 arquivos,
+  262 linhas) — **fora da árvore, intactos em `origin/main`.** Elas importam
+  `crypto.encrypt_password`, `crypto.decrypt_password`,
+  `strength.check_password_strength` e `db.credentials` — nada disso existe
+  aqui. E manter **duas** TUIs na mesma árvore é pior que qualquer uma das duas.
+
+⚠️ **Pendência real que isso deixa:** as telas do Renan têm **adicionar, editar e
+apagar**; a TUI desta árvore (`src/vault/tui/app.py`) é só leitura — busca,
+detalhe, revelar, copiar, TOTP e timeout de sessão. **O caminho certo não é
+portar a TUI dele por cima**, é implementar add/edit/delete na TUI daqui,
+usando as telas dele (`git show origin/main:src/vault/tui/screens/add.py`)
+como referência de UX. Não foi feito.
+
 ## ⛔ A migração ZK NÃO converte vault existente — e agora recusa em vez de quebrar
 
 Achado por revisão adversarial em 22/09/2026, e é **o pior defeito que a branch

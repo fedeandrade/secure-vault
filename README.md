@@ -136,6 +136,10 @@ scripts existem `VAULT_MASTER_PASSWORD` (senha atual), `VAULT_NEW_MASTER_PASSWOR
 
 Comandos destrutivos — `delete`, `destroy` e `passwd` — exigem a senha mestra.
 
+### Interface TUI
+
+![Demo da TUI: login, listar, buscar, adicionar (com gerador de senha) e apagar credenciais](assets/secure-vault-demo.gif)
+
 ## Testes
 
 ```bash

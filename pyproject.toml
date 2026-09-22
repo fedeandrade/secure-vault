@@ -44,9 +44,13 @@ Repository = "https://github.com/ReCroffi/secure-vault"
 requires = ["uv_build>=0.12.7,<0.13.0"]
 build-backend = "uv_build"
 
+[tool.uv.build-backend]
+module-name = "vault"
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=6.0.0",
     "ruff>=0.16.5",
 ]
