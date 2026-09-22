@@ -93,6 +93,38 @@ virou decifrar e cifrar o mesmo blob, então **um campo novo no `CredentialPaylo
 passa a ser re-cifrado sozinho** — a versão campo-a-campo anterior exigia lembrar
 de acrescentá-lo lá, e esquecer significava perder o campo na troca de senha.
 
+## Onde o trabalho está hoje — 22/09/2026
+
+⛔ **Você NÃO consegue empurrar para `ReCroffi/secure-vault`.** Medido:
+a conta `fedeandrade` tem `{"admin": false, "push": false, "pull": true}` nesse
+repositório — ele é do Renan, e é **público**. O `git push` falha com
+`403 Permission to ReCroffi/secure-vault.git denied to fedeandrade`. Não adianta
+tentar de novo; é permissão, não rede.
+
+**O caminho que funciona, e que está em uso:**
+
+| | |
+|---|---|
+| Fork | `fedeandrade/secure-vault` (público, criado em 22/09/2026) |
+| Remote | `fork` → `https://github.com/fedeandrade/secure-vault.git` |
+| Branch | `feature/completar-fases-04-10`, rastreando `fork/` |
+| PR | **[#19](https://github.com/ReCroffi/secure-vault/pull/19)** → `ReCroffi/secure-vault:main` |
+
+⚠️ **O PR #19 está em CONFLITO e não pode ser mesclado como está.** Medido com
+`git merge-tree --write-tree` (a seco, sem tocar na árvore): **20 arquivos**
+conflitam, entre eles `crypto.py`, `master_password.py`, `models.py`,
+`tui/app.py`, `conftest.py`, `migrations/env.py` e `pyproject.toml`.
+
+**A causa não é briga de desenho, é sobreposição:** o commit `89f3da9` do Renan
+("docs: comenta o codigo do projeto pra facilitar retomada futura") comentou
+**o código inteiro**, tocando quase todo arquivo que esta branch reescreveu. São
+`origin/main` 5 commits à frente do merge-base `3bdf278`, e esta branch 7.
+
+**Ao resolver, o risco é dos dois lados:** deixar cair os comentários do Renan, ou
+deixar cair as correções de segurança daqui (guard da migration, exclusão física,
+segredo sem quebra de linha). Resolver arquivo a arquivo, com a suíte rodando a
+cada um, e `.claude/gate.json` verde no fim.
+
 ## ⛔ A migração ZK NÃO converte vault existente — e agora recusa em vez de quebrar
 
 Achado por revisão adversarial em 22/09/2026, e é **o pior defeito que a branch
@@ -209,8 +241,10 @@ trabalho: `feature/completar-fases-04-10`, a partir de `origin/develop`.
   gravadas cifradas, senha errada recusada, senha certa recupera, troca de senha
   mestra re-cifrou 2 credenciais e a senha original voltou intacta.
 
-**Nada foi enviado ao GitHub.** O trabalho está apenas nesta máquina, por
-instrução explícita do Felipe (03/09/2026). ~~`origin/develop` continua na Fase 4.~~
+⚠️ ~~**Nada foi enviado ao GitHub.** O trabalho está apenas nesta máquina, por
+instrução explícita do Felipe (03/09/2026).~~ **Vencido em 22/09/2026:** o Felipe
+autorizou publicar, e a branch está no GitHub — ver "Onde o trabalho está hoje".
+~~`origin/develop` continua na Fase 4.~~
 ⚠️ **Vencido — medido em 22/09/2026 com `git fetch --all --prune`: `origin/develop`
 foi APAGADO no remoto** (junto com `origin/feature/05-crud-credenciais`). Sobrou
 `origin/main`, que avançou `abfbc6a..89f3da9` por commits do Renan em 09/09. A
