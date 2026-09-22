@@ -29,7 +29,8 @@ Tudo roda localmente: não há servidor, conta, sincronização nem telemetria. 
 | Todo segredo é cifrado antes do banco | **AES-256-GCM** (AEAD), blob versionado | [`core/crypto.py`](src/vault/core/crypto.py) |
 | Nonce único por registro **e por gravação** | `secrets.token_bytes(12)` a cada operação de cifragem | `crypto.encrypt` |
 | Adulteração do banco é detectada | A tag GCM autentica o texto cifrado; qualquer bit alterado falha | `crypto.decrypt` |
-| Blob não pode ser movido entre campos | *Associated data* distinta por campo (senha / notas / TOTP) | `crypto.AAD_*` |
+| Blob não pode ser movido de registro | *Associated data* fixa (`AAD_CREDENTIAL`) amarra o texto cifrado ao seu uso | `crypto.AAD_*` |
+| **Serviço, login e URL também são cifrados** | Zero-Knowledge: a credencial inteira vira **um** blob opaco | `db/repository.py` |
 | Senhas geradas são imprevisíveis | `secrets` (CSPRNG do SO), nunca `random` | [`core/generator.py`](src/vault/core/generator.py) |
 | Um vault que não abre é detectado no login | Sentinela `key_check` cifrada, conferida antes de tocar dado real | `master_password.unlock` |
 | Subir o custo do KDF não quebra vaults antigos | Os parâmetros de KDF são gravados **no vault**, não fixados no código | `vault_config.kdf_*` |
@@ -48,9 +49,19 @@ bastaria — mas "não são iguais por acidente do salt" é uma garantia frágil
 Passar a saída do Argon2 por um HKDF com rótulo fixo torna a separação explícita.
 
 **AES-GCM em vez de Fernet.** Fernet é AES-128-CBC + HMAC; usaria só metade da
-nossa chave de 256 bits e não tem *associated data*. Com GCM, cada texto cifrado
-fica amarrado ao campo onde nasceu: um blob copiado da coluna de senha para a de
-notas simplesmente não abre.
+nossa chave de 256 bits e não tem *associated data*. Com GCM, além de cifrar, a
+tag autentica — qualquer bit alterado no banco faz a abertura falhar em vez de
+devolver lixo silenciosamente.
+
+**Zero-Knowledge: a credencial inteira é um blob só.** Até 22/09/2026 o banco
+guardava `service_name`, `login` e `url` em texto e cifrava apenas os segredos.
+Hoje não guarda nada legível: a credencial inteira é serializada e cifrada sob
+uma *associated data* única. Quem lê o banco vê identificador, datas e bytes.
+
+⚠️ **Isso tem um preço, e ele é real:** listar e buscar passaram a **exigir a
+senha mestra**, porque não há mais o que indexar. `vault list` decifra todas as
+credenciais para poder mostrar o nome do serviço. Foi uma troca deliberada —
+a versão anterior escondia menos e custava menos.
 
 > **Escopo:** projeto educacional/portfólio. Não implementa proteção contra
 > memory dumping, ataques de canal lateral ou hardening de sistema operacional.
@@ -113,7 +124,7 @@ uv run vault init             # cria o vault e define a senha mestra
 vault init                    # cria o vault (uma vez por banco)
 vault status                  # parâmetros de KDF, cifra, total de credenciais
 vault add github renan -g     # guarda uma credencial com senha gerada
-vault list                    # lista (sem pedir a senha mestra: nada é decifrado)
+vault list                    # lista (PEDE a senha mestra: no ZK, o nome do serviço está cifrado)
 vault search git              # busca por serviço, login ou URL
 vault get github --login renan  # copia a senha, com auto-clear
 vault get github --show       # exibe em vez de copiar
@@ -143,7 +154,7 @@ Comandos destrutivos — `delete`, `destroy` e `passwd` — exigem a senha mestr
 ## Testes
 
 ```bash
-uv run pytest                                     # 250 testes, sem dependências externas
+uv run pytest                                     # 255 passam + 12 pulados, sem dependências externas
 uv run ruff check .
 ```
 
@@ -169,15 +180,25 @@ TEST_DATABASE_URL=postgresql+psycopg://<USUARIO>:<SENHA>@localhost:5432/secure_v
 - [x] Fase 9 — Interface TUI (`textual`)
 - [x] Fase 10 — Timeout de sessão, clipboard com auto-clear, 2FA na senha mestra
 
+As dez fases originais estão fechadas. O que veio depois — Zero-Knowledge, o
+cliente web e o CRUD da TUI — está em **[`docs/ROADMAP.md`](docs/ROADMAP.md)**,
+com o estado medido de cada frente.
+
 ## Limitações conhecidas
 
 Declaradas de propósito. Um projeto de segurança que não lista o que **não**
 protege está escondendo o modelo de ameaça.
 
-1. **Nome do serviço, login e URL ficam legíveis no banco.** Só os segredos
-   (senha, notas, segredo TOTP) são cifrados. Cifrar os metadados esconderia mais
-   de quem tem acesso direto ao banco, mas tornaria a busca impossível sem baixar
-   e decifrar a tabela inteira. É uma troca consciente.
+1. **Buscar e listar exigem a senha mestra, e custam O(n) decifragens.** Desde a
+   migração Zero-Knowledge de 22/09/2026 nada é legível no banco — nem o nome do
+   serviço. O outro lado da mesma moeda: não há índice possível, então toda busca
+   abre todas as credenciais em memória. Em vault pequeno é imperceptível; em
+   vault muito grande, é o limite conhecido desta arquitetura.
+
+   ⚠️ ~~Versão anterior: "Nome do serviço, login e URL ficam legíveis no banco.
+   Só os segredos são cifrados."~~ **Deixou de valer** — está registrado porque
+   quem criou um vault antes daquela data precisa saber que o formato mudou, e
+   que a migration **recusa** converter vault com credenciais.
 2. **A chave existe em memória enquanto o processo roda.** `bytearray` zerado ao
    trancar a sessão reduz a janela, mas o CPython pode ter feito cópias fora do
    nosso alcance, e a página pode ir para o swap. Não há proteção contra memory
