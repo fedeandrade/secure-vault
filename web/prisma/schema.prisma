@@ -22,6 +22,21 @@ model Credential {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   deletedAt     DateTime?
+
+  /// Incrementada a cada `PUT`. Existe desde já porque acrescentar coluna com a
+  /// tabela vazia custa zero, e depois da Fase 1 custaria uma segunda migration
+  /// mais uma mudança no contrato da rota.
+  ///
+  /// Para que serve: o AAD `v2` vai amarrar o blob a `<id>|<version>`, fechando
+  /// o ataque de restaurar o `encryptedData` anterior de uma linha — o cliente
+  /// hoje decifra isso sem erro nenhum, e o dono lê como atual a senha que ele
+  /// acabou de trocar por ter vazado.
+  ///
+  /// ⚠️ Limite honesto: quem escreve no banco restaura o `version` junto com o
+  /// blob. O AAD sozinho NÃO detecta rollback — só detecta se o cliente guardar
+  /// a maior versão que já viu (mesmo mecanismo do pin de `salt`). Quem
+  /// implementar o `v2` sem esse pin terá uma defesa que não defende.
+  version Int @default(1)
 }
 
 /// Configuração do vault do site. **Singleton**: é um vault de um usuário só, e

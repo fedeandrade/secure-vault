@@ -293,6 +293,38 @@ coluna sem leitor faz o próximo a mexer acreditar que há revogação onde não
 
 **Falta a Fase 1 inteira em código.** Enquanto ela não fechar, o site continua
 com salt global fixo e API sem autenticação: **não pode ir ao ar.**
+
+### ⛔ O CI do fork NUNCA rodou — e isso não é o mesmo que passar
+
+Medido em 22/09/2026 com `gh run list`: **todas** as execuções do workflow neste
+branch estão `completed / action_required`, com **duração 0s**. É a política do
+GitHub para PR vindo de fork: o workflow espera aprovação manual do mantenedor.
+Ou seja, o job `web` que este trabalho acrescentou **existe no arquivo e nunca
+foi executado no GitHub**, e o job Python também não. Só o GitGuardian roda.
+
+Quem for afirmar "o CI está verde" precisa primeiro do Renan aprovando a
+execução no PR #19.
+
+O que deu para provar **localmente**, e prova o essencial do job novo:
+`npm ci --dangerously-allow-all-scripts` (esta máquina tem trava de
+`install-scripts` no `~/.npmrc`; o `ubuntu-latest` **não** tem, e roda todo
+lifecycle script) instalou do zero com os postinstall do `@prisma/engines` e do
+`unrs-resolver` rodando, e em seguida `prisma generate`, `tsc --noEmit` e
+`next build` passaram. O risco de o `npm ci` do CI morrer num script de
+instalação está medido e afastado.
+
+### ⚠️ Os 4 `high` do `npm audit` em `web/` — não mexer, e por quê
+
+`prisma@7.10.0` (devDependency, o CLI) puxa `@prisma/config` → `deepmerge-ts`
+(exaustão de pilha em grafo recursivo) e `mysql2` (downgrade de auth plugin que
+vaza credencial em claro; inflate sem limite). **O `fixAvailable` que o npm
+sugere é `prisma@6.19.3` — um downgrade major que desfaz este trabalho inteiro.**
+
+Por que não é exposição real aqui: nada disso chega ao runtime. `prisma` é CLI de
+desenvolvimento, `mysql2` só existe porque o CLI suporta MySQL — e o projeto usa
+Postgres —, e o `prisma.config.ts` deste repo é um literal, não um grafo
+recursivo vindo de fora. Reavaliar quando a 7.x publicar correção; **não
+downgradar**.
 ## ⛔ Exclusão: por que voltou a ser física
 
 `delete_credential` apaga a linha. A primeira versão deste refactor marcava

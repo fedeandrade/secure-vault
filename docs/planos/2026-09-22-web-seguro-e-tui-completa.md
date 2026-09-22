@@ -198,8 +198,26 @@ há um blob por registro. O que transfere é **vínculo de identidade**, e o ata
 é concreto: com escrita no banco, o atacante restaura o `encryptedData` anterior
 de uma linha; o cliente decifra **sem erro nenhum**, e o Felipe lê como atual a
 senha que ele acabou de trocar justamente por ela ter vazado. O mesmo vale para
-*undelete*. O AAD (`...|<id>|<version>`, com coluna `version` incrementada em cada
-`PUT`) entra como `v2` — mas **só é possível depois porque o `v1.` está lá agora**.
+*undelete*. O AAD (`...|<id>|<version>`) entra como `v2` — mas **só é possível
+depois porque o `v1.` está lá agora**.
+
+✅ **A coluna `version` já entrou no schema** (22/09/2026, `@default(1)`), porque
+acrescentá-la com a tabela vazia custa zero e depois da Fase 1 custaria uma
+segunda migration mais uma mudança no contrato da rota. Falta o `PUT` incrementá-la.
+
+Duas coisas que o esboço do `v2` acima não resolvia, e que ficam registradas para
+quem for implementá-lo:
+
+- ⚠️ **AAD com `version` não detecta rollback sozinho.** Quem escreve no banco
+  restaura o `version` junto com o blob, e o AAD volta a bater. A defesa só existe
+  se o **cliente guardar a maior versão que já viu** — o mesmo mecanismo do pin de
+  `salt` da Decisão 1.4. Implementar o AAD sem esse pin produz uma defesa que não
+  defende, e pior: que parece defender.
+- ⚠️ **`id` é `@default(uuid())` gerado no banco**, então o cliente não conhece o
+  `id` antes de o `POST` responder — e o AAD precisa dele para cifrar. Ou o
+  cliente passa a gerar o UUID (`crypto.randomUUID()`) e manda no corpo, ou o
+  `POST` vira duas rodadas. A primeira opção é mais simples e não perde nada:
+  o `id` não é segredo.
 
 ### Decisão 1.7 — sentinela de chave, e nunca descartar em silêncio
 

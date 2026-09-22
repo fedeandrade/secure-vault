@@ -8,6 +8,7 @@ CREATE TABLE "Credential" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
     "deletedAt" TIMESTAMP(3),
+    "version" INTEGER NOT NULL DEFAULT 1,
 
     CONSTRAINT "Credential_pkey" PRIMARY KEY ("id")
 );
