@@ -380,7 +380,29 @@ em que o servidor decifra deixa de ser Zero-Knowledge, que é a premissa do prod
 
 ---
 
+## Registrado, mas fora da Fase 1 — achados da revisão que precisam de dono
+
+Nenhum destes expõe senha hoje. Ficam escritos para não sumirem.
+
+1. **Área de transferência sem auto-limpeza** (`page.tsx:204`). No Windows 11 o
+   histórico (Win+V) vem ligado por padrão e persiste; com sincronização, a senha
+   em texto claro vai para a nuvem da Microsoft. O Python tem
+   `src/vault/core/clipboard.py` com auto-clear; o web não tem nada.
+2. **Todas as senhas decifradas de uma vez, e sem auto-lock de tela.** O TTL de
+   sessão é do servidor, não da aba: notebook aberto expõe o vault inteiro.
+   Considerar decifrar sob demanda, por registro.
+3. ⛔ **`schema.prisma:7` fixa `file:./dev.db`, sem variável de ambiente.** Em
+   qualquer host serverless o filesystem é efêmero ou somente-leitura → **vault
+   perdido ou não gravável**. O portão da Fase 1 é "seguro para publicar", mas a
+   Fase 1 não toca nisso: o portão pode passar e a publicação ainda perder dados.
+   **Resolve junto com a Fase 4**, que é onde o banco é escolhido — e é o mesmo
+   bloqueio que segura a Fase 2.
+4. **`encryptedData` aceito sem validação de tipo nem de tamanho**
+   (`api/vault/route.ts:18`). Depois da autenticação ainda permite encher o
+   disco; antes dela, qualquer um.
+
 ## Fora de escopo, dito explicitamente
+
 
 - **App mobile.** Não existe e não entra aqui.
 - **Reescrever histórico** para limpar o alerta do GitGuardian. Ver `MEMORIA.md`.
