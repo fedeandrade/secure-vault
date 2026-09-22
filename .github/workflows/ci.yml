@@ -17,10 +17,11 @@ jobs:
           POSTGRES_PASSWORD: vault_ci
           POSTGRES_DB: vault_test
         ports:
-          # 5433 no host: o ubuntu-latest ja traz um PostgreSQL ocupando a
-          # 5432, e a colisao mandava a conexao para o servidor errado — que
-          # nao tem o usuario vault_ci. O sintoma era
-          # "password authentication failed", que parece senha errada e nao e.
+          # ⚠️ ~~"5433 porque o ubuntu-latest ja ocupa a 5432"~~ — hipotese
+          # MINHA, derrubada pela medicao: a causa real do
+          # "password authentication failed" era `str(URL)` do SQLAlchemy
+          # mascarando a senha como `***` em test_migrations.py. A porta nunca
+          # foi o problema. Mantida em 5433 so para nao mexer de novo.
           - 5433:5432
         options: >-
           --health-cmd pg_isready

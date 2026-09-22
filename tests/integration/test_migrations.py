@@ -35,12 +35,33 @@ def banco_descartavel() -> str:
 
     url = make_url(TEST_DATABASE_URL)
     nome = f"sv_mig_{uuid.uuid4().hex[:12]}"
-    admin = sa.create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    # ⚠️ A conexão administrativa usa o banco da própria `TEST_DATABASE_URL`, e
+    # **não** o banco `postgres`.
+    #
+    # `CREATE DATABASE` e `DROP DATABASE` funcionam de qualquer banco — a única
+    # regra é não estar conectado ao banco que se cria ou apaga. Apontar para
+    # `postgres` acrescentava um requisito que ninguém declarou: o usuário
+    # precisar de acesso a um banco que a configuração de teste nem menciona.
+    #
+    # Medido em 22/09/2026, e quebrou em dois ambientes diferentes pelo mesmo
+    # motivo com mensagens que não se parecem:
+    #   - num Postgres com `pg_hba.conf` por banco: *"no pg_hba.conf entry for
+    #     host …, database \"postgres\""*;
+    #   - no CI: *"password authentication failed"* — que parece senha errada e
+    #     não é.
+    admin = sa.create_engine(url, isolation_level="AUTOCOMMIT")
 
     with admin.connect() as conn:
         conn.execute(text(f'CREATE DATABASE "{nome}"'))
     try:
-        yield str(url.set(database=nome))
+        # ⛔ `str(url)` MASCARA a senha como `***`. O teste entregava uma URL com
+        # a senha literal `***`, e o Postgres respondia *"password authentication
+        # failed"* — que parece credencial errada no ambiente e é bug daqui.
+        #
+        # Escondeu-se por muito tempo porque estes testes só rodam com
+        # `TEST_DATABASE_URL` definida: na máquina de quem desenvolve eles são
+        # pulados, e no CI ninguém lia o log até 22/09/2026.
+        yield url.set(database=nome).render_as_string(hide_password=False)
     finally:
         with admin.connect() as conn:
             conn.execute(
