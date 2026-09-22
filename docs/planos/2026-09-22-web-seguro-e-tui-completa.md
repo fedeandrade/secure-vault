@@ -100,17 +100,65 @@ usuário só, sem ganho — e o cookie assinado já é revogável trocando o seg
 
 ---
 
-## Fase 2 — o site compila
+## Fase 2 — o site compila `[PARCIAL — bloqueada na Fase 4]`
 
-Declarar as dependências que o `globals.css` importa e que ninguém instalou.
-Verificar se `shadcn/tailwind.css` é real ou resíduo de scaffold — se for resíduo,
-**remover o import** em vez de instalar peso morto.
+⚠️ **Estimei "20 minutos para declarar dependência". Estava errado**, e o erro vale
+ficar registrado: ao puxar o fio, o que apareceu foi que **o site nunca foi
+executável**, não que faltava um pacote.
 
-### Critérios de aceite
+### Feito ✅
 
-- [ ] `npx next build` termina com exit 0.
+- **Andaime shadcn morto removido** — `components/ui/button.tsx`, `lib/utils.ts` e
+  `components.json`. Ninguém os importava, e `lib/utils.ts` fazia
+  `export { cn } from "cn"`, um pacote que não existe. Os imports
+  `tw-animate-css` e `shadcn/tailwind.css` saíram do `globals.css`: nenhuma
+  classe `animate-*`/`data-[state=` é usada em `src/`, e as variáveis do
+  `@theme inline` são todas definidas no próprio `:root`. **Remover em vez de
+  instalar 6 pacotes** — num gerenciador de senhas cada dependência é superfície
+  de supply chain. `next build` passou a compilar (`✓ Compiled successfully`).
+- **`@prisma/client` passou a ser declarado.** Estava em `node_modules` por
+  acaso, sem entrada no `package.json`.
+- **A CLI do Prisma era outro produto.** O `package.json` pedia
+  `prisma@^8.0.0-rc.15` — a *Prisma Developer Platform*, que **não tem
+  `prisma generate`** (medido: `CLI.UNKNOWN_COMMAND`) e cujo `prisma orm` só tem
+  `init`. O código é Prisma ORM clássico. Alinhado a `^7.10.0` estável, a mesma
+  versão do cliente já instalado.
+- **`postinstall: prisma skills sync` removido** — comando da 8-RC. Era ele que
+  criava `web/.agents/`, `.claude/`, `.cursor/` e `.devin/` sem ninguém pedir.
+- **`prisma.config.ts` do Felipe** usava `definePrismaConfig`, API da 8-RC que
+  **quebra a CLI 7.x inteira**. Tirado do caminho e preservado em
+  [`wip-felipe/prisma.config.ts.8rc-wip`](wip-felipe/prisma.config.ts.8rc-wip).
+- **Assinatura das rotas corrigida para Next 16**: `params` chega como `Promise`,
+  e o tipo dizia síncrono (`PUT` e `DELETE` de `api/vault/[id]`).
+
+### Bloqueado ⛔ — e o bloqueio é legítimo
+
+`npx tsc --noEmit` deixou **um** erro:
+
+```
+src/lib/prisma.ts(1,10): error TS2305:
+Module '"@prisma/client"' has no exported member 'PrismaClient'.
+```
+
+Porque o Prisma 7 mudou o contrato: **`url` sai do `schema.prisma`**, vai para
+`prisma.config.ts`, e o `PrismaClient` passa a exigir um **driver adapter**.
+
+**Escolher o adapter é escolher o banco** — e isso é exatamente a decisão da
+Fase 4. Fixar `@prisma/adapter-better-sqlite3` agora congelaria o `dev.db` como
+resposta antes de a pergunta ser feita. Além disso a Fase 1 vai acrescentar
+`VaultConfig` ao schema; fazer a migration duas vezes é desperdício.
+
+**Fase 2 fecha junto com a decisão de banco**, e não antes.
+
+### Critérios de aceite (revistos)
+
+- [x] `globals.css` resolve; o build compila.
+- [x] `web/package.json` declara tudo que é importado.
+- [x] CLI e cliente do Prisma na mesma versão estável.
+- [x] Rotas tipadas conforme o Next 16.
+- [ ] `npx tsc --noEmit` limpo — **depende do adapter (Fase 4)**.
+- [ ] `npx next build` exit 0 — idem.
 - [ ] `npm run lint` limpo.
-- [ ] `web/package.json` declara tudo que é importado; nada de dependência fantasma.
 
 ---
 

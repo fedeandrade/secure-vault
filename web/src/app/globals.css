@@ -1,6 +1,14 @@
 @import "tailwindcss";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
+
+/* Os imports `tw-animate-css` e `shadcn/tailwind.css` foram removidos em
+   22/09/2026: nenhum dos dois estava declarado no package.json, e era isso
+   que quebrava `next build` com "Can't resolve 'tw-animate-css'".
+
+   Removidos em vez de instalados porque NADA no código os usava — não há
+   uma classe `animate-in`/`fade-in`/`data-[state=` em `src/`, e as variáveis
+   do bloco `@theme inline` abaixo são todas definidas aqui mesmo, no `:root`
+   e no `.dark`. Num gerenciador de senhas, cada dependência é superfície de
+   supply chain: seis pacotes para código que ninguém importa não se paga. */
 
 @custom-variant dark (&:is(.dark *));
 
