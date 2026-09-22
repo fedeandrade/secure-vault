@@ -27,6 +27,13 @@ varredura e descartados; só `reveal()` devolve um objeto com a senha dentro.
 Isso não é cosmético: impede que uma lista renderizada, um log de debug ou um
 `repr()` acidental derrame segredo de 200 credenciais de uma vez.
 
+⚠️ **A proteção é da SAÍDA, não da memória.** Durante a varredura o payload
+completo de cada credencial — senha inclusive — existe em memória como `str`
+imutável, que `crypto.wipe` não alcança. `_varrer` é gerador justamente para
+manter **um** payload vivo por vez em vez de N, mas isso reduz a janela, não a
+elimina. *Memory dumping* está fora do escopo declarado no README, e com razão:
+quem lê a memória do processo já tem a chave derivada.
+
 O custo que sobra é real e está medido: uma busca é O(n) decifrações de AES-GCM.
 Para a ordem de grandeza de um vault pessoal (centenas de credenciais) isso é
 irrelevante. Se um dia virar problema, a saída **não** é voltar a gravar metadado
@@ -82,6 +89,7 @@ continuam valendo como prova de que a busca é literal.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime
 
@@ -203,13 +211,28 @@ def _ordem(meta: CredentialMetadata) -> tuple[str, str]:
     return (meta.service_name.lower(), meta.login.lower())
 
 
-def _varrer(session: Session, key: bytes) -> list[tuple[Credential, CredentialPayload]]:
-    """Carrega e decifra todas as credenciais vivas, na ordem do id.
+def _varrer(
+    session: Session, key: bytes
+) -> Iterator[tuple[Credential, CredentialPayload]]:
+    """Decifra as credenciais vivas uma a uma, na ordem do id.
 
     É o único ponto que decifra em massa. Quem chama filtra ou ordena depois.
+
+    **Gerador, e não lista, de propósito.** A versão anterior devolvia
+    `list[...]`, o que deixava o `CredentialPayload` COMPLETO de toda credencial
+    — senha, notas e TOTP — vivo em memória ao mesmo tempo, como `str` imutável
+    que `crypto.wipe` não alcança. Num vault de 200 credenciais, buscar por uma
+    materializava as 200 senhas de uma vez. A TUI torna isso concreto: ela chama
+    a busca a cada `Input.Changed`, ou seja **a cada tecla digitada**.
+
+    Como gerador, o interpretador mantém um payload por vez e o anterior fica
+    elegível para coleta. Não é proteção contra *memory dumping* — isso está
+    fora do escopo declarado no README, e um atacante com a memória do processo
+    já tem a chave. É reduzir a janela pelo custo de uma palavra.
     """
     stmt = select(Credential).where(_vivas()).order_by(Credential.id)
-    return [(c, _abrir_payload(key, c)) for c in session.scalars(stmt)]
+    for credential in session.scalars(stmt):
+        yield credential, _abrir_payload(key, credential)
 
 
 def create_credential(
