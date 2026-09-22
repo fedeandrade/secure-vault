@@ -14,7 +14,6 @@ fora do escopo declarado do projeto.
 from __future__ import annotations
 
 from rich.console import Console
-from rich.text import Text
 
 from vault.config.settings import get_settings
 from vault.core import clipboard
@@ -104,11 +103,15 @@ def _executar(sessao: VaultSession, comando: str, argumento: str) -> None:
     from vault.cli.main import _tabela
 
     if comando == "list":
+        # No Zero-Knowledge, listar decifra: serviço e login vivem no blob.
+        # O shell já está destravado, então a chave sai da sessão — o usuário
+        # não é perguntado de novo.
+        chave = sessao.key()
         with session_scope() as db:
             achados = (
-                repo.search_credentials(db, argumento)
+                repo.search_credentials(db, chave, argumento)
                 if argumento
-                else repo.list_credentials(db)
+                else repo.list_credentials(db, chave)
             )
             tabela = _tabela(achados)
             total = len(achados)
@@ -125,10 +128,9 @@ def _executar(sessao: VaultSession, comando: str, argumento: str) -> None:
 
         if comando == "show":
             # Text(), nunca f-string com markup: a senha pode conter colchetes.
-            console.print(
-                Text(f"{aberta.service_name}/{aberta.login}: ")
-                + Text(aberta.password, style="bold")
-            )
+            from vault.cli.main import _imprimir_segredo
+
+            _imprimir_segredo(f"{aberta.service_name}/{aberta.login}", aberta.password)
         elif comando == "code":
             if not aberta.totp_secret:
                 console.print("[dim]Esta credencial não tem segredo TOTP.[/dim]")

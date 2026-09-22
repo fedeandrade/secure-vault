@@ -231,7 +231,7 @@ def _adotar_sentinela(session: Session, config: VaultConfig, key: bytes) -> None
 
     if amostra is not None:
         try:
-            crypto.decrypt(key, amostra.encrypted_password, aad=crypto.AAD_PASSWORD)
+            crypto.decrypt(key, amostra.encrypted_data, aad=crypto.AAD_CREDENTIAL)
         except DecryptionError as exc:
             raise DecryptionError(
                 "A senha está correta, mas a chave derivada não abre as "
@@ -293,26 +293,22 @@ def change_master_password(
     new_salt = generate_salt()
     new_key = derive_encryption_key(new_password, new_salt, new_params)
 
+    # `select(Credential)` SEM filtro de `deleted_at`, de propósito: uma
+    # credencial excluída logicamente continua cifrada com a chave antiga. Pular
+    # essas linhas aqui as tornaria indecifráveis para sempre depois da troca —
+    # a chave velha deixa de existir e não há como voltar atrás.
+    #
+    # Com o blob único, re-cifrar é decifrar e cifrar o MESMO texto: não é
+    # preciso desserializar o payload. Um campo novo no `CredentialPayload` passa
+    # a ser re-cifrado sozinho, sem ninguém lembrar de acrescentá-lo aqui — que
+    # foi exatamente o risco da versão campo-a-campo anterior.
     credentials = list(session.scalars(select(Credential)))
     for credential in credentials:
-        senha = crypto.decrypt(
-            old_key, credential.encrypted_password, aad=crypto.AAD_PASSWORD
+        payload_claro = crypto.decrypt(
+            old_key, credential.encrypted_data, aad=crypto.AAD_CREDENTIAL
         )
-        notas = crypto.decrypt_optional(
-            old_key, credential.encrypted_notes, aad=crypto.AAD_NOTES
-        )
-        totp_secret = crypto.decrypt_optional(
-            old_key, credential.encrypted_totp_secret, aad=crypto.AAD_TOTP
-        )
-
-        credential.encrypted_password = crypto.encrypt(
-            new_key, senha, aad=crypto.AAD_PASSWORD
-        )
-        credential.encrypted_notes = crypto.encrypt_optional(
-            new_key, notas, aad=crypto.AAD_NOTES
-        )
-        credential.encrypted_totp_secret = crypto.encrypt_optional(
-            new_key, totp_secret, aad=crypto.AAD_TOTP
+        credential.encrypted_data = crypto.encrypt(
+            new_key, payload_claro, aad=crypto.AAD_CREDENTIAL
         )
 
     if config.totp_secret_encrypted is not None:

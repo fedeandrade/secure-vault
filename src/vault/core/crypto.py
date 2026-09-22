@@ -43,6 +43,22 @@ TAG_SIZE = 16
 KEY_SIZE = 32  # AES-256
 
 #: Rótulos de *associated data*. Amarram cada texto cifrado ao campo de origem.
+#:
+#: Na arquitetura Zero-Knowledge a credencial inteira vira **um** blob, cifrado
+#: sob `AAD_CREDENTIAL`. `AAD_MASTER_TOTP` e `AAD_KEY_CHECK` seguem em uso pelo
+#: `vault_config`.
+#:
+#: ⚠️ `AAD_PASSWORD`, `AAD_NOTES` e `AAD_TOTP` **não são mais usados em produção**
+#: — nenhum código em `src/` os referencia desde a migration `edb62ca16834`.
+#: Sobrevivem por dois motivos, e nenhum deles é compatibilidade: (1) a migration
+#: **recusa** converter vault populado, então não existe dado legado alcançável
+#: por este código; (2) `tests/unit/test_crypto.py` precisa de dois rótulos
+#: distintos para provar que decifrar com o AAD errado falha — que é a garantia
+#: central do AEAD.
+#:
+#: **Nunca reaproveite um `:v1` para significado novo; crie `:v2`.** Trocar o
+#: sentido de um rótulo torna indecifrável todo texto cifrado sob ele.
+AAD_CREDENTIAL = b"secure-vault:credential.payload:v1"
 AAD_PASSWORD = b"secure-vault:credential.password:v1"
 AAD_NOTES = b"secure-vault:credential.notes:v1"
 AAD_TOTP = b"secure-vault:credential.totp:v1"

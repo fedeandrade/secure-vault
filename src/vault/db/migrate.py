@@ -50,6 +50,17 @@ def upgrade_to_head(database_url: str | None = None) -> None:
     command.upgrade(alembic_config(database_url), "head")
 
 
+def upgrade_to(revision: str, database_url: str | None = None) -> None:
+    """Sobe até uma revisão específica, e não até `head`.
+
+    Existe para os testes conseguirem montar um banco no schema ANTIGO e só
+    então tentar a migração seguinte. Sem isso não há como exercitar o caminho
+    "vault já populado" — que foi exatamente onde o defeito da migration
+    Zero-Knowledge se escondeu.
+    """
+    command.upgrade(alembic_config(database_url), revision)
+
+
 def downgrade_to(revision: str, database_url: str | None = None) -> None:
     command.downgrade(alembic_config(database_url), revision)
 

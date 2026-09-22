@@ -64,6 +64,11 @@ class VaultTUI(App[None]):
         super().__init__()
         self._sessao = sessao
         self._ids: list[int] = []
+        #: Metadado já decifrado da última busca, por id. Guardar isto é o que
+        #: permite ao painel de detalhe continuar **sem tocar na senha**: no
+        #: Zero-Knowledge, serviço e login só existem dentro do blob, e reabrir a
+        #: credencial a cada tecla de navegação decifraria a senha junto.
+        self._metadados: dict[int, repo.CredentialMetadata] = {}
 
     # -- construção da tela ------------------------------------------------
 
@@ -92,9 +97,11 @@ class VaultTUI(App[None]):
         tabela = self.query_one("#tabela", DataTable)
         tabela.clear()
         self._ids.clear()
+        self._metadados.clear()
         try:
+            chave = self._sessao.key()  # pode levantar SessionExpiredError
             with session_scope() as db:
-                achados = repo.search_credentials(db, termo)
+                achados = repo.search_credentials(db, chave, termo)
                 linhas = [
                     (
                         str(c.id),
@@ -106,6 +113,7 @@ class VaultTUI(App[None]):
                     for c in achados
                 ]
                 self._ids = [c.id for c in achados]
+                self._metadados = {c.id: c for c in achados}
         except VaultError as exc:
             self.notify(str(exc), severity="error")
             return
@@ -140,19 +148,18 @@ class VaultTUI(App[None]):
         credential_id = self._credencial_selecionada()
         if credential_id is None:
             return
-        try:
-            with session_scope() as db:
-                credential = repo.get_credential(db, credential_id)
-                titulo = f"{credential.service_name} / {credential.login}"  # literal
-                campos = (
-                    f"URL: {credential.url or '—'}\n"
-                    f"Criada: {credential.created_at:%Y-%m-%d %H:%M}   "
-                    f"Atualizada: {credential.updated_at:%Y-%m-%d %H:%M}\n"
-                    f"Segundo fator: {'sim' if credential.has_totp else 'não'}"
-                )
-        except VaultError as exc:
-            self.notify(str(exc), severity="error")
+        # Sem ida ao banco e sem decifrar de novo: o metadado da busca basta, e
+        # navegar pela lista nunca chega perto da senha.
+        meta = self._metadados.get(credential_id)
+        if meta is None:
             return
+        titulo = f"{meta.service_name} / {meta.login}"  # literal
+        campos = (
+            f"URL: {meta.url or '—'}\n"
+            f"Criada: {meta.created_at:%Y-%m-%d %H:%M}   "
+            f"Atualizada: {meta.updated_at:%Y-%m-%d %H:%M}\n"
+            f"Segundo fator: {'sim' if meta.has_totp else 'não'}"
+        )
         self.query_one("#titulo", Label).update(Text(titulo))
         self.query_one("#campos", Static).update(Text(campos))
 

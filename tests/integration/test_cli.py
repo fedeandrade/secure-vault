@@ -407,3 +407,27 @@ def test_generate_varias_tem_o_comprimento_pedido() -> None:
     assert len(senhas) == 5
     assert all(len(x.strip()) == 16 for x in senhas), senhas
     assert len({x.strip() for x in senhas}) == 5
+
+
+def test_senha_longa_sai_inteira_numa_linha_so(cli: CliRunner) -> None:
+    """Segredo nao pode ser quebrado pela largura do terminal.
+
+    Medido em 22/09/2026: o `console` normal do rich quebra na largura do
+    terminal, e uma senha de 100 caracteres em 80 colunas saia em 3 linhas --
+    com o valor inteiro em NENHUMA delas. Quem copia da tela cola uma senha
+    partida e nao entra em lugar nenhum. E a mesma classe de perda silenciosa
+    que `literal()` evita com markup, e por isso segredo sai pelo
+    `segredo_console`, que tem `soft_wrap=True` e `no_color=True`.
+
+    Se alguem trocar `segredo_console` pelo `console` normal, este teste falha.
+    """
+    resultado = runner.invoke(app, ["generate", "--length", "100"])
+    assert resultado.exit_code == 0, f"saida={resultado.output!r}"
+
+    linhas = [linha.strip() for linha in resultado.output.splitlines()]
+    inteiras = [linha for linha in linhas if len(linha) == 100]
+    assert inteiras, (
+        "nenhuma linha traz a senha de 100 caracteres inteira -- ela foi quebrada "
+        f"pela largura do terminal. Saida: {linhas!r}"
+    )
+    assert "" not in inteiras[0], "escape ANSI no meio do segredo"

@@ -45,13 +45,34 @@ from vault.core.totp import (
     provisioning_uri,
 )
 from vault.db import repository as repo
-from vault.db.models import Credential
 from vault.db.repository import CredentialInput
 from vault.db.session import session_scope
 from vault.exceptions import VaultError
 
 console = Console()
 err_console = Console(stderr=True)
+
+#: Console EXCLUSIVO para imprimir segredo. Ver `_imprimir_segredo`.
+segredo_console = Console(soft_wrap=True, no_color=True, highlight=False)
+
+
+def _imprimir_segredo(rotulo: str, valor: str) -> None:
+    """Imprime um segredo garantindo que ele saia **numa linha só e sem estilo**.
+
+    O `console` normal quebra a linha na largura do terminal. Medido em
+    22/09/2026: uma senha de 100 caracteres num terminal de 80 colunas sai em
+    3 linhas, e **o valor inteiro não aparece em nenhuma delas**. Quem copia da
+    tela cola uma senha partida e não entra em lugar nenhum — o mesmo tipo de
+    perda silenciosa que a função `literal()` existe para evitar com markup.
+
+    `soft_wrap=True` desliga a quebra; `no_color=True` e `highlight=False`
+    impedem que qualquer escape ANSI entre no meio do valor. Isso importa além
+    da estética: com `FORCE_COLOR` no ambiente, o rich colore mesmo sem TTY, e um
+    segredo TOTP saía com `[1m` no meio — o `base32decode` de quem o lesse
+    estourava `binascii.Error: Non-base32 digit found`, que não parece problema
+    de cor nenhum.
+    """
+    segredo_console.print(Text(f"{rotulo}: ") + Text(valor))
 
 #: Variável de ambiente aceita no lugar do prompt. Ver docstring do módulo.
 MASTER_PASSWORD_ENV = "VAULT_MASTER_PASSWORD"  # noqa: S105 - nome da variável, não um segredo
@@ -143,7 +164,7 @@ def _fail(mensagem: str) -> NoReturn:
 def _entregar_segredo(valor: str, *, copiar: bool, mostrar: bool, rotulo: str) -> None:
     """Mostra na tela ou copia com auto-clear, conforme as flags."""
     if mostrar:
-        console.print(Text(f"{rotulo}: ") + Text(valor, style="bold"))
+        _imprimir_segredo(rotulo, valor)
         return
 
     segundos = get_settings().clipboard_clear_seconds
@@ -160,7 +181,7 @@ def _entregar_segredo(valor: str, *, copiar: bool, mostrar: bool, rotulo: str) -
     console.print("[dim]Área de transferência limpa.[/dim]")
 
 
-def _tabela(credenciais: list[Credential]) -> Table:
+def _tabela(credenciais: list[repo.CredentialMetadata]) -> Table:
     tabela = Table(show_header=True, header_style="bold cyan")
     tabela.add_column("ID", justify="right", style="dim")
     tabela.add_column("Serviço")
@@ -344,15 +365,35 @@ def list_command(
         str | None, typer.Option("--search", "-s", help="Filtra por serviço, login ou URL")
     ] = None,
 ) -> None:
-    """Lista as credenciais. Não pede a senha mestra: nada é decifrado aqui."""
+    """Lista as credenciais. **Pede a senha mestra**, e não tem como não pedir.
+
+    Isto mudou com a arquitetura Zero-Knowledge. Antes, serviço, login e URL
+    ficavam em texto puro no banco e a lista saía sem chave nenhuma. Hoje esses
+    campos vivem dentro do blob cifrado: **sem a senha mestra não existe nome de
+    serviço para mostrar nem para ordenar.** O preço de o banco não saber de quem
+    é a credencial é este.
+
+    O que a lista continua NÃO fazendo é exibir segredo: `list_credentials`
+    devolve `CredentialMetadata`, sem senha, sem notas e sem segredo TOTP.
+    Para abrir uma credencial existe `vault get`.
+    """
     try:
+        # A checagem vem ANTES de pedir a senha: em banco sem vault, pedir
+        # primeiro faz o usuario digitar a senha mestra para so entao descobrir
+        # que nao havia nada para abrir.
         with session_scope() as session:
             if not vault_exists(session):
                 _fail("Nenhum vault neste banco. Rode `vault init`.")
+
+        mestra = prompt_master_password()
+        codigo = _pedir_totp_se_necessario()
+
+        with session_scope() as session:
+            chave = unlock(session, mestra, totp_code=codigo)
             credenciais = (
-                repo.search_credentials(session, search)
+                repo.search_credentials(session, chave, search)
                 if search
-                else repo.list_credentials(session)
+                else repo.list_credentials(session, chave)
             )
             tabela = _tabela(credenciais)
             total = len(credenciais)
@@ -388,9 +429,9 @@ def get(
         with session_scope() as session:
             chave = unlock(session, mestra, totp_code=codigo_mestre)
             if login:
-                credential = repo.find_by_service_login(session, service, login)
+                encontrada = repo.find_by_service_login(session, chave, service, login)
             else:
-                achados = repo.search_credentials(session, service)
+                achados = repo.search_credentials(session, chave, service)
                 if not achados:
                     _fail(f"Nenhuma credencial para {service!r}.")
                 if len(achados) > 1:
@@ -399,8 +440,9 @@ def get(
                         f"{len(achados)} credenciais casam com {service!r}. "
                         "Use --login para escolher."
                     )
-                credential = achados[0]
-            aberta = repo.reveal(chave, credential)
+                encontrada = achados[0]
+            # A busca devolve metadado (sem segredo). Abrir é o passo explícito.
+            aberta = repo.reveal(chave, repo.get_credential(session, encontrada.id))
 
         console.print(
             Text(aberta.service_name, style="bold") + Text(f" / {aberta.login}")
@@ -413,7 +455,7 @@ def get(
             if aberta.totp_secret:
                 console.print(
                     Text("TOTP agora: ")
-                    + Text(current_code(aberta.totp_secret), style="bold")
+                    + Text(current_code(aberta.totp_secret))
                 )
             else:
                 console.print("[dim]Sem segredo TOTP guardado.[/dim]")
@@ -493,9 +535,10 @@ def delete(
         codigo = _pedir_totp_se_necessario()
 
         with session_scope() as session:
-            unlock(session, mestra, totp_code=codigo)
-            credential = repo.get_credential(session, credential_id)
-            rotulo = f"{credential.service_name} / {credential.login}"
+            chave = unlock(session, mestra, totp_code=codigo)
+            # O rótulo da confirmação vive dentro do blob: só sai decifrando.
+            aberta = repo.reveal(chave, repo.get_credential(session, credential_id))
+            rotulo = f"{aberta.service_name} / {aberta.login}"
 
         if not yes and not typer.confirm(f"Apagar {rotulo} definitivamente?", default=False):
             raise typer.Abort()
@@ -545,8 +588,11 @@ def generate(
         if copy:
             _entregar_segredo(senhas[0], copiar=True, mostrar=False, rotulo="Senha")
         else:
+            # `segredo_console`, e não `console`: senha longa tem de sair inteira
+            # numa linha só. Ver `_imprimir_segredo`. Aqui sem rótulo, porque a
+            # saída é feita para ser copiada direto.
             for senha in senhas:
-                console.print(literal(senha))
+                segredo_console.print(literal(senha))
         console.print(f"[dim]entropia: {bits:.1f} bits por senha[/dim]")
     except VaultError as exc:
         _fail(str(exc))
@@ -605,7 +651,7 @@ def totp_enable(
             uri = provisioning_uri(segredo, account_name="senha-mestra")
 
         console.print("[green]Segundo fator ativado.[/green]")
-        console.print(Text("Segredo (guarde offline): ") + Text(segredo, style="bold"))
+        _imprimir_segredo("Segredo (guarde offline)", segredo)
         console.print(Text("URI para o QR code: ") + literal(uri))
         console.print("[yellow]Sem este segredo e sem o app autenticador, você perde o acesso.[/yellow]")
     except VaultError as exc:
@@ -699,8 +745,10 @@ def destroy(
                 raise typer.Abort()
 
         with session_scope() as session:
-            for credential in repo.list_credentials(session):
-                repo.delete_credential(session, credential)
+            # Exclusão física, e sem chave: destruir o vault inteiro não precisa
+            # decifrar nada, e `delete_credential` aqui só marcaria `deleted_at`
+            # deixando as linhas cifradas para trás — o oposto de "apagar tudo".
+            repo.purge_all_credentials(session)
             session.delete(get_vault_config(session))
 
         console.print(f"[green]Vault apagado ({total} credencial(is)).[/green]")

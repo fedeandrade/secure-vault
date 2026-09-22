@@ -1,0 +1,5 @@
+{
+  "command": "uv run --no-sync ruff check . && uv run --no-sync pytest",
+  "timeoutMs": 150000,
+  "_porque": "Projeto Python (pyproject.toml + uv.lock), nao Node. O gate so passou a enxergar este repositorio em 22/09/2026, quando acharRaiz() do gate-qa.mjs deixou de exigir package.json e a guarda de node_modules ausente passou a valer so para projeto npm. --no-sync: sem ele, `uv run` sincroniza o venv contra o lockfile, e um hook Stop que toca a rede ou mexe no .venv nao e deterministico. Com --no-sync, ambiente quebrado falha alto. SEM -q de proposito: o addopts do pyproject ja tem -q, e um segundo -q vira -qq, que ESCONDE a linha de total. O hook manda as ultimas 60 linhas do stderr para o agente; sem o total, a linha que diz quantos testes estao vermelhos e justamente a que se perde. Medido em 22/09/2026, do jeito que o hook roda: 13s (ruff <1s + pytest ~11s). timeoutMs 150s fica abaixo do timeout de 180s do proprio hook Stop no settings.json -- passar disso nao adianta, porque o Claude Code mata o hook antes."
+}

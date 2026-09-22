@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy.orm import Session
 
@@ -18,7 +20,7 @@ from vault.core.master_password import (
     verify_master_password,
 )
 from vault.db import repository as repo
-from vault.db.models import VAULT_CONFIG_ID
+from vault.db.models import VAULT_CONFIG_ID, Credential
 from vault.db.repository import CredentialInput
 from vault.exceptions import (
     AuthenticationError,
@@ -163,7 +165,8 @@ def test_troca_de_senha_re_cifra_tudo(session: Session, vault_criado) -> None:
     chave_nova = unlock(session, NOVA_SENHA)
     assert chave_nova != chave_velha
 
-    aberta = repo.reveal(chave_nova, repo.find_by_service_login(session, "github", "renan"))
+    encontrada = repo.find_by_service_login(session, chave_nova, "github", "renan")
+    aberta = repo.reveal(chave_nova, repo.get_credential(session, encontrada.id))
     assert aberta.password == "senha-do-github"
     assert aberta.notes == "anotação secreta"
 
@@ -243,3 +246,42 @@ def test_troca_de_senha_re_cifra_o_segredo_totp(session: Session, vault_criado) 
     )
     # O mesmo autenticador continua valendo depois da troca.
     assert unlock(session, NOVA_SENHA, totp_code=current_code(segredo))
+
+
+def test_troca_re_cifra_ate_a_linha_marcada_como_apagada(
+    session: Session, vault_criado
+) -> None:
+    """A re-cifragem NÃO pode pular linha com `deleted_at`. Se pular, ela morre.
+
+    `change_master_password` usa `select(Credential)` sem filtro de propósito.
+    Este teste existe porque a linha que garante isso não tinha nenhuma prova:
+    um refactor futuro que "conserte" aquele select acrescentando `_vivas()`
+    deixaria a suíte verde e tornaria a linha **indecifrável para sempre** — a
+    chave velha deixa de existir na troca e não há como voltar atrás.
+
+    A linha marcada não vem de `vault delete` (que apaga de verdade — ver
+    `repository.delete_credential`), e sim do vault web, que usa `deleted_at`
+    como tombstone de sincronização. Se os dois lados dividirem o banco, é esse
+    o cenário.
+    """
+    chave_velha = unlock(session, SENHA_MESTRA)
+    marcada = repo.create_credential(
+        session,
+        chave_velha,
+        CredentialInput("servico-apagado", "renan", "senha-que-nao-pode-morrer"),
+    )
+    repo.create_credential(
+        session, chave_velha, CredentialInput("servico-vivo", "renan", "outra-senha")
+    )
+    # Como o vault web marcaria: a linha continua no banco, fora das leituras.
+    marcada.deleted_at = datetime.now(UTC)
+    session.flush()
+
+    assert repo.count_credentials(session) == 1, "a marcada não pode aparecer nas leituras"
+
+    total = change_master_password(session, SENHA_MESTRA, NOVA_SENHA)
+    assert total == 2, "a re-cifragem tem de contar a marcada também"
+
+    chave_nova = unlock(session, NOVA_SENHA)
+    aberta = repo.reveal(chave_nova, session.get(Credential, marcada.id))
+    assert aberta.password == "senha-que-nao-pode-morrer"

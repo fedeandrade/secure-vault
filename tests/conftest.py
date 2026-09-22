@@ -26,18 +26,37 @@ Três decisões que fazem a suíte ser rápida, determinística e ainda assim ho
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
 
-import pytest
-import sqlalchemy as sa
-from sqlalchemy import Engine
-from sqlalchemy.orm import Session
+# ---------------------------------------------------------------------------
+# ANTES de qualquer import de `vault`, e não numa fixture: o `Console` do Rich é
+# construído no import de `vault.cli.main` e lê o ambiente ali, uma vez só.
+# Apagar a variável depois, numa fixture autouse, chega tarde demais.
+#
+# Rich liga a cor pela PRESENÇA de `FORCE_COLOR`, não pelo valor — `FORCE_COLOR=0`
+# LIGA a cor. Medido em 22/09/2026: o hook Stop do gate exporta `FORCE_COLOR=0`
+# tentando desligá-la, e derrubava 6 testes que passavam no shell. O pior deles
+# não parecia problema de cor: o segredo TOTP saía da CLI com `\x1b[1m` no meio e
+# o `base32decode` estourava `binascii.Error: Non-base32 digit found`.
+#
+# A suíte não pode depender de quem a executa.
+# ---------------------------------------------------------------------------
+for _forca_cor in ("FORCE_COLOR", "CLICOLOR_FORCE"):
+    os.environ.pop(_forca_cor, None)
+os.environ["NO_COLOR"] = "1"
+os.environ.setdefault("TERM", "dumb")
 
-from vault.config.settings import get_settings, reset_settings_cache
-from vault.core.kdf import KdfParams
-from vault.db.base import Base
-from vault.db.engine import create_engine_for, reset_engine_cache
-from vault.db.session import configure_session_factory, reset_session_factory
+from collections.abc import Iterator  # noqa: E402
+
+import pytest  # noqa: E402
+import sqlalchemy as sa  # noqa: E402
+from sqlalchemy import Engine  # noqa: E402
+from sqlalchemy.orm import Session  # noqa: E402
+
+from vault.config.settings import get_settings, reset_settings_cache  # noqa: E402
+from vault.core.kdf import KdfParams  # noqa: E402
+from vault.db.base import Base  # noqa: E402
+from vault.db.engine import create_engine_for, reset_engine_cache  # noqa: E402
+from vault.db.session import configure_session_factory, reset_session_factory  # noqa: E402
 
 #: Custo mínimo aceito pelo Argon2. Só para os testes — ver decisão 2.
 KDF_TESTE = KdfParams(time_cost=1, memory_cost=8, parallelism=1, hash_len=32)
@@ -77,6 +96,17 @@ def _ambiente_limpo(monkeypatch: pytest.MonkeyPatch, tmp_path) -> Iterator[None]
         "CLIPBOARD_CLEAR_SECONDS",
         "VAULT_MASTER_PASSWORD",
         "VAULT_TOTP_CODE",
+        # Rich decide colorir pela PRESENÇA de `FORCE_COLOR`, não pelo valor:
+        # `FORCE_COLOR=0` LIGA a cor. Quem herdasse essa variável via ANSI para
+        # dentro da saída da CLI, e todo teste que lê `resultado.output`
+        # quebrava — inclusive de um jeito cruel, porque o segredo TOTP saía com
+        # `\x1b[1m` no meio e o `base32decode` estourava
+        # `binascii.Error: Non-base32 digit found`, que não parece problema de cor.
+        # Medido em 22/09/2026: o hook Stop do gate exporta `FORCE_COLOR=0`
+        # justamente tentando DESLIGAR a cor, e derrubava 6 testes que passavam
+        # no shell. A suíte não pode depender de quem a executa.
+        "FORCE_COLOR",
+        "CLICOLOR_FORCE",
     ):
         monkeypatch.delenv(variavel, raising=False)
 

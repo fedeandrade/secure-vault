@@ -4,7 +4,192 @@ Estado autoritativo do projeto. Ao entrar aqui, leia este arquivo antes do
 código. Se algo divergir do sistema vivo, o sistema vence e **este arquivo é
 corrigido no mesmo trabalho**.
 
-## Estado — 03/09/2026
+## Estado — 22/09/2026 (o que vale hoje)
+
+✅ **A suíte está VERDE: 255 passed, 12 skipped, `ruff check .` limpo.** Provado
+pelo hook do gate, não só pelo shell — `GATE VERDE` no
+`~/.claude/gate-cache/ultima-execucao.log`, 22/09/2026.
+
+Os 12 `skipped` são **todos** de `test_migrations.py` e só rodam com
+`TEST_DATABASE_URL` apontando para um Postgres real. **Postgres não foi medido
+nesta rodada** — o que vale aqui é SQLite.
+
+⛔ ~~Estava VERMELHA no começo do dia: **41 failed, 195 passed, 12 skipped, 14
+errors** — 55 itens.~~ A migração Zero-Knowledge foi **terminada em 22/09/2026**
+e é o que fechou os 55. O que mudou está na seção "A migração Zero-Knowledge,
+terminada" abaixo.
+
+⚠️ **A suíte quebrava conforme QUEM a rodava, e isso está consertado.** O `Console`
+do Rich liga a cor pela **presença** de `FORCE_COLOR`, não pelo valor: o hook do
+gate exporta `FORCE_COLOR=0` tentando desligar a cor e **ligava**. Seis testes que
+passavam no shell reprovavam sob o gate. O pior nem parecia problema de cor — o
+segredo TOTP saía da CLI com `\x1b[1m` no meio e o `base32decode` estourava
+`binascii.Error: Non-base32 digit found`. Corrigido no **topo** do
+`tests/conftest.py`, e não numa fixture: o `Console` é construído no import de
+`vault.cli.main` e lê o ambiente ali, uma vez só — apagar a variável numa fixture
+`autouse` chega tarde demais.
+
+⚠️ **Cuidado ao medir:** o `addopts` do `pyproject.toml` já inclui `-q`. Passar
+`-q` de novo vira `-qq` e o pytest **omite a linha de total** — foi assim que a
+primeira medição deste dia leu "58 unitários" (era contagem de pontos numa linha
+que quebrou) em vez de 130. Rode sem `-q` extra quando quiser o número.
+
+## A migração Zero-Knowledge, terminada em 22/09/2026
+
+**O que estava quebrado:** o commit `6a7c6b7` (20/09) trocou `Credential` por um
+blob opaco — sobraram `id`, `encrypted_data`, `created_at`, `updated_at`,
+`deleted_at` — mas `repository.py`, `cli/main.py`, `cli/shell.py`, `tui/app.py` e
+`core/master_password.py` continuavam consultando `Credential.service_name` e
+`encrypted_password`. Modelo, payload, migration e web foram commitados; **as
+camadas que os consomem, não.** Erro exato:
+`AttributeError: type object 'Credential' has no attribute 'service_name'`.
+
+**O desenho não era dúvida — já estava commitado.** A migration
+`edb62ca16834_zero_knowledge_schema` adiciona só `encrypted_data` e `deleted_at`,
+derruba `service_name`, `login`, `url`, `encrypted_password`, `encrypted_notes`,
+`encrypted_totp_secret` **e o índice `ix_credentials_service_name`**. Não há blind
+index nem coluna de HMAC. O `web/prisma/schema.prisma` também é blob puro. Logo:
+busca é **decifra-depois-filtra na aplicação**, e não havia alternativa a escolher.
+
+⚠️ "Também é blob puro" **não** quer dizer que os dois lados sejam compatíveis —
+ver "Os dois vaults não falam a mesma língua", abaixo.
+
+**O que mudou de contrato, e por quê:**
+
+| Antes | Agora | Motivo |
+|---|---|---|
+| `list_credentials(session)` | `list_credentials(session, key)` | sem chave não há nome de serviço para ordenar |
+| `search_credentials(session, q)` | `search_credentials(session, key, q)` | idem; o `LIKE` virou `in` sobre texto decifrado |
+| `find_by_service_login(session, s, l)` | `find_by_service_login(session, key, s, l)` | idem; devolve metadado, não a linha ORM |
+| devolviam `Credential` (ORM) | devolvem `CredentialMetadata` | **sem senha, notas nem TOTP dentro** |
+| `delete_credential` apagava a linha | continua apagando **de verdade** | ver abaixo: a versão com `deleted_at` foi revertida |
+| — | `purge_all_credentials(session)` | exclusão física, só para `vault destroy`, e sem exigir a chave |
+
+⚠️ **`vault list` passou a pedir a senha mestra, e não tem como não pedir.** Era
+o comando que não decifrava nada; hoje serviço, login e URL vivem dentro do blob.
+É o preço direto de o banco não saber de quem é a credencial. O que a lista
+continua **não** fazendo é exibir segredo: `CredentialMetadata` não carrega senha.
+
+⚠️ **A unicidade virou responsabilidade só da aplicação.** A
+`UniqueConstraint(service_name, login)` sumiu com as colunas: o banco não barra
+mais nada, e o `IntegrityError` que virava `DuplicateCredentialError` **nunca mais
+acontece**. `_colisao_case_insensitive` é a única barreira. Se alguém a remover
+"porque o banco garante", duas credenciais iguais entram em silêncio e `vault get`
+fica ambíguo para sempre.
+
+⚠️ **Custo aceito, com a saída anotada:** buscar é O(n) decifrações de AES-GCM.
+Irrelevante para um vault pessoal. Se um dia doer, a saída **não** é voltar a
+gravar metadado em claro — é um segundo blob por linha, só com os campos
+buscáveis, para a varredura não tocar na senha. O schema atual (uma coluna
+`encrypted_data`, igual no Prisma) não comporta isso sem nova migration.
+
+**Ganho de segurança que veio junto:** o teste central
+`test_credencial_e_gravada_cifrada` afirmava
+`assert bruto.service_name == "github"  # metadado é legível de propósito`. Hoje
+ele prova o contrário — que **senha, serviço, login, URL e notas não aparecem em
+texto puro no blob**, e que a tabela não tem mais coluna onde guardar metadado
+legível. A troca de senha mestra também ficou mais segura por acidente: re-cifrar
+virou decifrar e cifrar o mesmo blob, então **um campo novo no `CredentialPayload`
+passa a ser re-cifrado sozinho** — a versão campo-a-campo anterior exigia lembrar
+de acrescentá-lo lá, e esquecer significava perder o campo na troca de senha.
+
+## ⛔ A migração ZK NÃO converte vault existente — e agora recusa em vez de quebrar
+
+Achado por revisão adversarial em 22/09/2026, e é **o pior defeito que a branch
+tinha**. Vinha do commit `a22042c`, não da adaptação das camadas.
+
+`edb62ca16834` adiciona `encrypted_data` como `NOT NULL` **sem `server_default`** e
+derruba as colunas antigas **sem nenhum passo de conversão de dados** — não existe
+migração de dados em lugar nenhum do repositório. Medido em SQLite, vault com 1
+credencial, `alembic upgrade head`:
+
+    IntegrityError: NOT NULL constraint failed: _alembic_tmp_credentials.encrypted_data
+
+O rollback salvava os dados, mas o usuário ficava **preso na revisão antiga para
+sempre**, sem mensagem que explicasse e sem caminho de export/import.
+
+⚠️ **E o conserto óbvio era pior que o defeito.** Pôr `server_default=b""` faz a
+migration passar e **destrói tudo em silêncio**: as colunas com os blobs reais são
+derrubadas logo abaixo, toda linha fica com `encrypted_data = b""`, e o `_varrer`
+do repositório passa a estourar `DecryptionError` na primeira linha — derrubando
+`list`, `search`, `get`, `add` e `update` de uma vez. Vault bricado sem explicação.
+**Se você está prestes a fazer isso, não faça.**
+
+**O que foi feito:** aplicado o guard `MigrationBlocked` que já existia na revisão
+anterior (`b1c7d3e59f20`) e não tinha sido usado aqui. `upgrade()` e `downgrade()`
+recusam rodar com a tabela `credentials` não vazia, e a mensagem diz o que fazer
+(exportar → `vault destroy` → migrar → recadastrar). Converter de verdade exigiria
+**decifrar** cada credencial, e a migration não tem a chave: ela só existe depois
+de o usuário digitar a senha mestra. Recusar é a única resposta honesta.
+
+**Por que ninguém tinha visto:** os testes de migration só migravam vault VAZIO, e
+o único que inseria credencial inseria **depois** do upgrade. O defeito morava
+exatamente nesse vão. Coberto agora por 3 testes em `test_migration_sqlite.py`
+(recusa no upgrade, recusa no downgrade, e vault vazio continuando a passar).
+
+⚠️ **Consequência prática:** quem já tiver um vault com credenciais **não tem
+caminho automático** para o formato Zero-Knowledge. Isso é limitação conhecida, não
+descuido — e precisa de decisão antes de a branch ir para qualquer usuário: ou se
+escreve um `vault export` / `vault import` que passe pela chave, ou se assume que
+a migração é manual.
+
+## ⛔ Os dois vaults não falam a mesma língua
+
+Achado em 22/09/2026 e **não resolvido**. Apontar os dois para o mesmo banco hoje
+não funciona, e a divergência é maior do que um detalhe de tipo:
+
+| | Python (CLI/TUI) | Web (`web/`) |
+|---|---|---|
+| `id` | inteiro autoincrementado | `String @id @default(uuid())` |
+| blob | `LargeBinary` | `String` |
+| KDF | Argon2id | PBKDF2-600k |
+| formato | blob versionado **com AAD** | `iv.ct` em base64, **sem AAD** |
+| payload | `snake_case` (`service_name`) | `camelCase` (`serviceName`) |
+
+**Interoperabilidade é impossível hoje**, e não por acaso de implementação: sem
+AAD, o lado web não tem como detectar um blob trocado de campo ou de registro.
+Decidir qual formato vence **antes** de qualquer sincronização.
+
+## ⛔ Exclusão: por que voltou a ser física
+
+`delete_credential` apaga a linha. A primeira versão deste refactor marcava
+`deleted_at`, e a revisão adversarial mediu o que isso significava:
+
+    apos `vault delete`:  list -> []   count -> 0
+    a linha ainda existe no banco?     -> True
+    a senha antiga ainda abre?         -> 'SENHA-VAZADA-QUE-EU-QUERO-SUMIR'
+    apos `vault passwd`, abre com a CHAVE NOVA? -> a mesma senha
+
+O motivo real de alguém apagar uma credencial é a senha ter vazado. A CLI dizia
+"apagada" e a senha comprometida continuava no `.db`, em todo backup, e era
+**re-cifrada com a chave nova a cada rotação** — imortal, e sem comando nenhum
+que a listasse. Num gerenciador de senhas, "apaguei" tem de significar apagado.
+
+**`deleted_at` continua no modelo e não é sobra:** é o tombstone de sincronização
+do vault web. As leituras filtram `_vivas()` de propósito, para o caso de os dois
+lados um dia dividirem o banco. E `change_master_password` re-cifra **sem** esse
+filtro, de propósito — pular uma linha marcada a tornaria indecifrável para
+sempre. Isso tem teste próprio desde 22/09
+(`test_troca_re_cifra_ate_a_linha_marcada_como_apagada`), porque um refactor que
+"conserte" aquele select deixaria a suíte verde destruindo dado.
+
+⚠️ ~~"Todas as 10 fases do roadmap estão implementadas e testadas." (03/09/2026)~~
+**Vencido em 22/09/2026.** Era verdade no dia em que foi escrito e deixou de ser
+com os commits de 20/09. Não apagado: explica por que a suíte já esteve verde e o
+que exatamente a derrubou.
+
+✅ **O gate QA passou a cobrir este projeto em 22/09/2026.** Até então ele era
+cego aqui: `~/.claude/hooks/gate-qa.mjs` só reconhecia raiz de projeto por
+`package.json`, e este repositório é Python — **todo turno encerrado aqui saía por
+"sem package.json → nada a verificar", sem medir nada.** Havia um segundo bloqueio
+logo depois: a guarda de `node_modules` ausente, que num projeto Python nunca
+existe. Os dois foram corrigidos e o gate está declarado em
+[`.claude/gate.json`](.claude/gate.json) (`uv run ruff check . && uv run pytest`).
+Provado no mesmo dia: o hook achou a raiz, rodou e devolveu **GATE VERMELHO em 13s**
+com o `AttributeError` na saída. Enquanto a suíte estiver vermelha, nenhum turno
+encerra aqui dizendo "pronto".
+
+## Estado — 03/09/2026 (histórico)
 
 **Todas as 10 fases do roadmap estão implementadas e testadas.** Branch de
 trabalho: `feature/completar-fases-04-10`, a partir de `origin/develop`.
@@ -25,7 +210,13 @@ trabalho: `feature/completar-fases-04-10`, a partir de `origin/develop`.
   mestra re-cifrou 2 credenciais e a senha original voltou intacta.
 
 **Nada foi enviado ao GitHub.** O trabalho está apenas nesta máquina, por
-instrução explícita do Felipe (03/09/2026). `origin/develop` continua na Fase 4.
+instrução explícita do Felipe (03/09/2026). ~~`origin/develop` continua na Fase 4.~~
+⚠️ **Vencido — medido em 22/09/2026 com `git fetch --all --prune`: `origin/develop`
+foi APAGADO no remoto** (junto com `origin/feature/05-crud-credenciais`). Sobrou
+`origin/main`, que avançou `abfbc6a..89f3da9` por commits do Renan em 09/09. A
+branch local `feature/completar-fases-04-10` não tem upstream: ela está diverging
+de um ponto de partida que não existe mais. Antes de pensar em PR, decidir contra
+qual base — `origin/main` é a única viva.
 
 ## Decisões que não podem ser revertidas por engano
 

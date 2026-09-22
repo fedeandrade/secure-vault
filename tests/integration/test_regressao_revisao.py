@@ -22,6 +22,7 @@ from vault.cli.main import app
 from vault.core import crypto
 from vault.core.kdf import KdfParams, derive_encryption_key, generate_salt
 from vault.core.master_password import create_vault, get_vault_config, unlock
+from vault.core.schema import CredentialPayload, PayloadSerializer
 from vault.db import repository as repo
 from vault.db.models import Credential
 from vault.db.repository import CredentialInput
@@ -265,13 +266,29 @@ def test_par_colidente_existente_da_erro_de_dominio_e_nao_traceback(
     Antes: `MultipleResultsFound`, que não é `VaultError` — a CLI não capturava e
     o usuário levava um traceback do SQLAlchemy. As duas credenciais ficavam
     permanentemente inacessíveis por `vault get`.
+
+    O cenário continua possível **e ficou mais fácil** com o Zero-Knowledge: a
+    `UniqueConstraint(service_name, login)` sumiu junto com as colunas, então
+    nada no banco impede o par. A única barreira é `_colisao_case_insensitive`,
+    que roda na aplicação — qualquer cliente que não a execute grava o par em
+    silêncio. Por isso as duas linhas aqui são inseridas **direto**, cifradas na
+    mão: é exatamente o que um vault escrito por outro cliente pareceria.
     """
-    session.add(Credential(service_name="github", login="renan", encrypted_password=b"\x01"))
-    session.add(Credential(service_name="GitHub", login="renan", encrypted_password=b"\x01"))
+    for servico in ("github", "GitHub"):
+        payload = CredentialPayload(service_name=servico, login="renan", password="x")
+        session.add(
+            Credential(
+                encrypted_data=crypto.encrypt(
+                    chave,
+                    PayloadSerializer.dump(payload).decode("utf-8"),
+                    aad=crypto.AAD_CREDENTIAL,
+                )
+            )
+        )
     session.flush()
 
     with pytest.raises(DuplicateCredentialError) as erro:
-        repo.find_by_service_login(session, "github", "renan")
+        repo.find_by_service_login(session, chave, "github", "renan")
 
     assert "maiúsculas" in str(erro.value)
     assert "#" in str(erro.value)  # traz os ids para o usuário resolver
