@@ -10,7 +10,7 @@ no [`README.md`](../README.md). Este documento cobre o que veio depois.
 | Frente | Estado | Bloqueio |
 |---|---|---|
 | **Zero-Knowledge no CLI/TUI** | ✅ fechado | — |
-| **Fase 1** — site deixa de expor senha | 🔶 **implementada, não verificada contra banco real** | falta rodar com Postgres de pé |
+| **Fase 1** — site deixa de expor senha | 🔶 **implementada e provada contra Postgres real** | falta a camada HTTP e revisão adversarial |
 | **Fase 2** — site compila | ✅ fechado | — |
 | **Fase 3** — CRUD na TUI | ⏳ não começado | — |
 | **Fase 4** — site e CLI, mesmo vault? | 🔶 metade decidida | falta o formato |
@@ -45,9 +45,30 @@ automático** de migração. É limitação declarada, não descuido — ou se e
 
 ## 🔶 Fase 1 — o site deixa de expor senha
 
-**Implementada em 22/09/2026.** ⚠️ **Nunca rodou contra um Postgres de pé** —
-`tsc`, `eslint`, `vitest` e `next build` passam, e nenhum deles abre conexão.
-Até essa prova existir, isto é código escrito, não fluxo verificado.
+**Implementada em 22/09/2026, e provada contra um PostgreSQL 18.6 de verdade.**
+
+```
+npm run prova:e2e      # 17/17 — PROVA APROVADA
+```
+
+`scripts/prova-e2e.ts` roda init → login → destrancar → gravar → ler contra o
+banco, sem mock nenhum. O que ela pega e que `tsc`/`eslint`/`vitest`/
+`next build` **não pegam**: o adapter conectar de fato, o schema bater com o
+código, o argon2id do servidor aceitar o `authValue` do cliente, e o envelope
+reabrir depois de ir e voltar do banco.
+
+As três provas que mais importam, porque falham se o Zero-Knowledge for só
+conversa — ela lê a tabela com SQL cru e procura os valores em claro:
+
+```
+  ok │ nome do serviço NÃO aparece em claro no banco
+  ok │ login NÃO aparece em claro no banco
+  ok │ senha NÃO aparece em claro no banco
+```
+
+⚠️ **O que a prova NÃO cobre: a camada HTTP.** Ela exercita cripto, schema e
+argon2id; não sobe o Next nem bate nas rotas. O `401 sem cookie` tem teste
+unitário nas guardas, não na rota inteira.
 
 ### O que foi feito
 
@@ -87,10 +108,10 @@ Até essa prova existir, isto é código escrito, não fluxo verificado.
 
 ### ⛔ Falta para a fase fechar
 
-- [ ] Subir o Postgres, rodar `npm run vault:init` e destrancar o vault de
-      ponta a ponta. **Nada abaixo disto vale sem esse passo.**
+- [x] ~~Subir o Postgres e rodar o fluxo de ponta a ponta.~~ **Feito** —
+      `npm run prova:e2e`, 17/17 contra PostgreSQL 18.6.
 - [ ] Teste de integração provando 401 sem cookie nas 4 rotas (hoje as
-      guardas têm teste unitário; a rota inteira, não).
+      guardas têm teste unitário; a rota inteira, não). Precisa subir o Next.
 - [ ] Teste provando que a senha mestra não aparece em nenhum corpo de
       requisição.
 - [ ] Revisão adversarial independente do código — a do plano revisou o

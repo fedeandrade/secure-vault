@@ -13,7 +13,8 @@
     "db:deploy": "prisma migrate deploy",
     "test": "vitest run",
     "test:watch": "vitest",
-    "vault:init": "node scripts/vault-init.ts"
+    "vault:init": "node scripts/vault-init.ts",
+    "prova:e2e": "node scripts/prova-e2e.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.1",
