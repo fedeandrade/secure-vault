@@ -125,16 +125,18 @@ enfeite.
 
 ## 3. Invariantes do cliente web
 
-🔶 **Estado em 22/09/2026: implementado, não verificado contra banco real.**
+🔶 **Estado em 22/09/2026: implementado e provado contra Postgres real.**
 
 ⚠️ ~~"O site NÃO cumpre esta seção. Ele tem salt global fixo, API sem
-autenticação nenhuma e chave exportável."~~ **Superado no mesmo dia** — os 14
-invariantes abaixo estão em código, com 21 testes. Mas `tsc`, `eslint`,
-`vitest` e `next build` **não abrem conexão com banco nenhum**: o fluxo
-completo (init → login → destrancar → gravar) nunca rodou.
+autenticação nenhuma e chave exportável."~~ **Superado no mesmo dia.** Os 14
+invariantes abaixo estão em código, com 21 testes unitários **mais** uma prova
+de integração contra PostgreSQL 18.6 (`npm run prova:e2e`, 17/17) que lê a
+tabela com SQL cru e confirma que serviço, login e senha não aparecem em claro.
 
-⛔ **Continua valendo: não publicar.** Código que compila não é fluxo
-verificado, e a implementação ainda não passou por revisão adversarial.
+⛔ **Continua valendo: não publicar.** Duas lacunas concretas: a camada HTTP
+não tem teste de integração (o `401 sem cookie` é testado nas guardas, não na
+rota), e a implementação não passou por revisão adversarial — a do plano
+revisou o desenho.
 
 | # | Invariante | Por quê |
 |---|---|---|
@@ -194,4 +196,7 @@ verificou — torceu.**
 | `authValue` malformado é recusado antes do argon2id | `web/src/lib/auth-guardas.test.ts` |
 | O atraso do login tem teto (senão vira auto-DoS) | idem |
 | Origem cruzada é recusada, inclusive as parecidas | idem |
+| Nada em claro no banco (web) | `web/scripts/prova-e2e.ts` — lê `Credential` com SQL cru e procura serviço, login e senha |
+| O envelope reabre depois do banco | idem |
+| Troca de senha não toca os registros | idem |
 | Tudo junto | `node scripts/gate.mjs` — e ele **reprova** de verdade: com o IV fixado em zeros, saiu exit 1 apontando `web · vitest` |
