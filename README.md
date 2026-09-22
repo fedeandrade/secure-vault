@@ -152,7 +152,7 @@ Os testes que exigem um PostgreSQL real (migrations, `CHECK`, `timestamptz`) sã
 marcados e pulados quando não há banco; para incluí-los:
 
 ```bash
-TEST_DATABASE_URL=postgresql+psycopg://vault:senha@localhost:5432/secure_vault uv run pytest
+TEST_DATABASE_URL=postgresql+psycopg://<USUARIO>:<SENHA>@localhost:5432/secure_vault uv run pytest
 ```
 
 ## Roadmap

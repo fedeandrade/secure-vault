@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     )
 
     database_url: str | None = None
-    """URL SQLAlchemy. Ex.: postgresql+psycopg://vault:senha@localhost:5432/secure_vault"""
+    """URL SQLAlchemy. Ex.: postgresql+psycopg://<USUARIO>:<SENHA>@localhost:5432/secure_vault"""
 
     kdf_algorithm: str = "argon2id"
     kdf_time_cost: int = Field(default=DEFAULT_KDF_TIME_COST, ge=1)
@@ -64,7 +64,7 @@ class Settings(BaseSettings):
                 "Copie .env.example para .env e preencha DATABASE_URL, ou exporte "
                 "a variável de ambiente.\n"
                 "Exemplo: "
-                "DATABASE_URL=postgresql+psycopg://vault:senha@localhost:5432/secure_vault"
+                "DATABASE_URL=postgresql+psycopg://<USUARIO>:<SENHA>@localhost:5432/secure_vault"
             )
         return self.database_url
 

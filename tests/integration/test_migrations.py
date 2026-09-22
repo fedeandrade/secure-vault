@@ -229,8 +229,13 @@ def test_url_com_porcento_e_escapada() -> None:
     """Senha com `%` quebraria o ConfigParser do Alembic sem o escape."""
     from vault.db.migrate import escape_url_for_alembic
 
-    url = "postgresql+psycopg://vault:se%nha@localhost:5432/db"
-    assert escape_url_for_alembic(url) == "postgresql+psycopg://vault:se%%nha@localhost:5432/db"
+    # O `%` no lugar da senha e o ponto do teste: o ConfigParser do Alembic
+    # interpreta `%` como interpolacao e estoura se ele nao for escapado.
+    url = "postgresql+psycopg://<USUARIO>:<SEN%HA>@localhost:5432/db"
+    assert (
+        escape_url_for_alembic(url)
+        == "postgresql+psycopg://<USUARIO>:<SEN%%HA>@localhost:5432/db"
+    )
 
 
 # ---------------------------------------------------------------------------
