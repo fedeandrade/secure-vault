@@ -107,6 +107,17 @@ if (!temDeps) {
       "[gate]     Rode `npm ci` em web/ para que o gate volte a medir o site.\n"
   )
 } else {
+  // ⛔ `next typegen` ANTES do tsc, e isto não é ordem arbitrária.
+  //
+  // O Next 16 GERA tipos (`LayoutProps`, `PageProps`) em `.next/types/`, e o
+  // `layout.tsx` os usa. Rodar o tsc primeiro só funcionava aqui porque sobrava
+  // um `.next/` de um build anterior — em clone limpo, e no CI, o tsc falhava
+  // com `TS2304: Cannot find name 'LayoutProps'`.
+  //
+  // Medido em 22/09/2026: o CI do fork estava VERMELHO por isto enquanto o gate
+  // local dizia verde. Gate que depende de artefato de build anterior não é gate,
+  // é sorte. Reproduzível com `rm -rf .next && npx tsc --noEmit`.
+  resultados.push(rodar("web · typegen", "npx next typegen", WEB))
   resultados.push(rodar("web · tsc", "npx tsc --noEmit", WEB))
   resultados.push(rodar("web · eslint", "npx eslint", WEB))
   resultados.push(rodar("web · vitest", "npx vitest run", WEB))
