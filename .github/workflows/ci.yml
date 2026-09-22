@@ -17,7 +17,11 @@ jobs:
           POSTGRES_PASSWORD: vault_ci
           POSTGRES_DB: vault_test
         ports:
-          - 5432:5432
+          # 5433 no host: o ubuntu-latest ja traz um PostgreSQL ocupando a
+          # 5432, e a colisao mandava a conexao para o servidor errado — que
+          # nao tem o usuario vault_ci. O sintoma era
+          # "password authentication failed", que parece senha errada e nao e.
+          - 5433:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -25,8 +29,8 @@ jobs:
           --health-retries 5
 
     env:
-      DATABASE_URL: postgresql+psycopg://vault_ci:vault_ci@localhost:5432/vault_test
-      TEST_DATABASE_URL: postgresql+psycopg://vault_ci:vault_ci@localhost:5432/vault_test
+      DATABASE_URL: postgresql+psycopg://vault_ci:vault_ci@localhost:5433/vault_test
+      TEST_DATABASE_URL: postgresql+psycopg://vault_ci:vault_ci@localhost:5433/vault_test
       KDF_ALGORITHM: argon2id
 
     steps:
@@ -86,6 +90,13 @@ jobs:
 
       - name: Gera o cliente do Prisma
         run: npx prisma generate
+
+      # O Next 16 GERA `LayoutProps`/`PageProps` em `.next/types/`, e o
+      # `layout.tsx` os usa. Sem este passo o tsc falha com TS2304 em clone
+      # limpo — que foi exatamente o que aconteceu aqui enquanto o gate local
+      # passava por causa de um `.next/` sobrando.
+      - name: Gera os tipos de rota do Next
+        run: npx next typegen
 
       - name: Confere os tipos
         run: npx tsc --noEmit
