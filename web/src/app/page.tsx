@@ -155,12 +155,25 @@ export default function VaultApp() {
         throw new Error(corpo.error ?? "Credenciais inválidas.");
       }
 
-      const chave = await abrirVault(chaveEnvelope, config.wrappedVaultKey!);
+      // ⛔ `wrappedVaultKey` e `keyCheck` só são buscados AGORA, com sessão.
+      //
+      // A versão anterior os recebia no primeiro `GET`, sem autenticação — e
+      // isso entregava um oráculo de quebra offline a quem fizesse um único
+      // `GET` na URL: com salt + iterações + envelope, testa-se dicionário
+      // localmente e a tag do GCM diz se acertou. Medido: 96 ms por palpite,
+      // sem banco roubado, sem login e sem deixar rastro no log.
+      const comSessao = await fetch("/api/vault/config");
+      const segredos: Config = await comSessao.json();
+      if (!segredos.wrappedVaultKey || !segredos.keyCheck) {
+        throw new Error("O servidor não devolveu a chave do vault.");
+      }
+
+      const chave = await abrirVault(chaveEnvelope, segredos.wrappedVaultKey);
 
       // Sentinela ANTES de renderizar qualquer coisa. O `authValue` não serve
       // para isto: ele prova que o servidor aceitou você, não que a sua chave
       // abre os dados. Sob rebaixamento de KDF os dois discordam.
-      if (!(await conferirChave(chave, config.keyCheck!))) {
+      if (!(await conferirChave(chave, segredos.keyCheck))) {
         throw new Error(
           "A chave derivada não abre este vault. Os dados podem ter sido " +
             "alterados por fora da aplicação."

@@ -161,7 +161,13 @@ export async function derivarChaves(
   )
 
   const authValue = paraBase64(authBits)
+  // Zera os TRÊS intermediários, não só o da chave de cifragem: `bruta` é a
+  // saída do PBKDF2 e reconstrói as duas metades, então deixá-la viva anulava o
+  // cuidado com `encBits`. O plano pedia `raw.fill(0)` e isso tinha ficado de
+  // fora.
+  zerar(new Uint8Array(bruta))
   zerar(new Uint8Array(encBits))
+  zerar(new Uint8Array(authBits))
 
   return { authValue, chaveEnvelope }
 }
@@ -199,6 +205,44 @@ export async function criarVault(chaveEnvelope: CryptoKey): Promise<VaultRecemCr
   } finally {
     // `wrapKey` do WebCrypto exigiria a chave exportável, que é justamente o que
     // não queremos — por isso passamos pelos bytes crus e os zeramos aqui.
+    zerar(bytes)
+  }
+}
+
+/**
+ * Re-envelopa a **mesma** `vaultKey` sob uma chave derivada nova. É isto que
+ * trocar a senha mestra tem de fazer.
+ *
+ * ⛔ **Esta função existe porque a ausência dela destruía vaults.** Sem ela, o
+ * único caminho alcançável de fora do módulo era chamar `criarVault` de novo — e
+ * `criarVault` **sorteia uma `vaultKey` nova**. Gravar esse `wrappedVaultKey` por
+ * cima apaga a única cópia da chave que cifrou os registros, e toda credencial
+ * guardada vira ilegível **para sempre**.
+ *
+ * Pior: o `keyCheck` regravado junto **aprova** o vault destruído, porque ele
+ * prova *"esta vaultKey abre esta sentinela"*, nunca *"esta vaultKey é a que
+ * abriu as credenciais"*. Medido em 22/09/2026: `abrirVault` OK,
+ * `conferirChave` → `true`, e as N credenciais falhando uma a uma.
+ *
+ * **O `keyCheck` NÃO é regravado por esta função, de propósito:** a `vaultKey`
+ * não mudou, então a sentinela antiga continua correta. Regravá-la seria
+ * justamente o que mascara o erro.
+ *
+ * `wrapKey` do WebCrypto não serve: ele exigiria a `vaultKey` exportável, que é
+ * o que não se quer. Por isso passamos pelos bytes crus e os zeramos.
+ */
+export async function reenvelopar(
+  envelopeAntigo: CryptoKey,
+  envelopeNovo: CryptoKey,
+  wrappedVaultKey: string
+): Promise<string> {
+  const bytes = await decifrarBytes(envelopeAntigo, wrappedVaultKey, AAD_VAULTKEY)
+  try {
+    if (bytes.length !== 32) {
+      throw new ErroDeCripto("wrappedVaultKey com tamanho inesperado.")
+    }
+    return await cifrarBytes(envelopeNovo, bytes, AAD_VAULTKEY)
+  } finally {
     zerar(bytes)
   }
 }

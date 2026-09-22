@@ -90,6 +90,24 @@ describe.skipIf(!TEM_BANCO)("rotas sem sessão", () => {
     expect(cfg).not.toHaveProperty("lockedUntil")
   })
 
+  it("⛔ sem sessão, /config NÃO entrega wrappedVaultKey nem keyCheck", async () => {
+    // Esta é a diferença entre "o salt é público" e "o oráculo de quebra é
+    // público". Com salt + iterações + `wrappedVaultKey`, um estranho faz UM
+    // `GET`, vai embora e testa dicionário offline: `PBKDF2 → HKDF →
+    // AES-GCM.decrypt`, e a tag do GCM diz se acertou. Medido em 22/09/2026:
+    // 96 ms por palpite, sem banco roubado, sem login, sem tocar no rate limit
+    // e sem rastro no log.
+    const cfg = await (await fetch(`${BASE}/api/vault/config`)).json()
+
+    expect(cfg).not.toHaveProperty("wrappedVaultKey")
+    expect(cfg).not.toHaveProperty("keyCheck")
+    // O que PODE sair sem autenticação, porque o cliente precisa antes de ter
+    // qualquer chave:
+    expect(Object.keys(cfg).sort()).toEqual(
+      cfg.initialized ? ["initialized", "kdfIterations", "salt"] : ["initialized"]
+    )
+  })
+
   it("⛔ NÃO existe POST em /api/vault/config", async () => {
     // Uma rota pública de inicialização era takeover remoto: qualquer um
     // inicializava o vault com o próprio salt entre o deploy e o primeiro
@@ -151,6 +169,34 @@ describe.skipIf(!TEM_BANCO)("cabeçalhos", () => {
     expect(csp).toContain("connect-src 'self'")
     // `unsafe-inline` em script-src anularia a proteção contra XSS.
     expect(csp).not.toMatch(/script-src[^;]*unsafe-inline/)
+  })
+
+  it("⛔ TODO script inline da página carrega nonce — senão o site não hidrata", async () => {
+    // Este teste existe porque a versão anterior da CSP QUEBRAVA o produto e
+    // nenhum teste pegou. O que havia conferia só o CABEÇALHO, e passava: ele
+    // nunca carregava a página.
+    //
+    // O Next 16 emite três `<script>` inline em toda página (`self.__next_r` e
+    // dois `self.__next_f.push(...)`, que é o payload RSC). Com
+    // `script-src 'self'` sem nonce, o browser bloqueia os três, o React não
+    // hidrata, e como `page.tsx` é "use client" sobra um cartão estático: o
+    // `GET /api/vault/config` nunca acontece e "Destrancar" não faz nada.
+    const res = await fetch(`${BASE}/`)
+    const html = await res.text()
+    const csp = res.headers.get("content-security-policy") ?? ""
+
+    const nonceDoCabecalho = csp.match(/'nonce-([^']+)'/)?.[1]
+    expect(nonceDoCabecalho, "a CSP precisa trazer um nonce").toBeTruthy()
+
+    // Todo <script> sem `src` é inline e precisa do nonce.
+    const inline = [...html.matchAll(/<script(?![^>]*\ssrc=)([^>]*)>/gi)].map((m) => m[1])
+    expect(inline.length, "o Next emite inline; se não emitir, revise o teste").toBeGreaterThan(0)
+
+    for (const atributos of inline) {
+      expect(atributos, `<script${atributos}> está sem nonce`).toContain(
+        `nonce="${nonceDoCabecalho}"`
+      )
+    }
   })
 
   it("as respostas da API não podem ser cacheadas", async () => {

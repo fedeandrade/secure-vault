@@ -59,13 +59,19 @@ export async function DELETE(
 
   try {
     const { id } = await params
-    // ⚠️ Soft delete AQUI é diferente do lado Python, e de propósito: `deletedAt`
-    // é a lápide de sincronização deste vault. O lado Python voltou a apagar
-    // fisicamente porque lá o `vault passwd` re-cifrava a credencial apagada,
-    // mantendo viva a senha que o dono apagou por ter vazado. Aqui não existe
-    // re-cifragem por registro — o envelope resolve a troca de senha com UM
-    // blob —, então a lápide não ressuscita segredo nenhum.
-    await prisma.credential.update({ where: { id }, data: { deletedAt: new Date() } })
+    // ⛔ Exclusão FÍSICA, igual ao lado Python.
+    //
+    // ⚠️ ~~"Soft delete aqui é diferente do Python e de propósito: `deletedAt` é
+    // a lápide de sincronização, e como não há re-cifragem por registro ela não
+    // ressuscita segredo nenhum."~~ **O argumento respondia ao MECANISMO do
+    // problema do Python, não ao DANO.** A linha continuava no Postgres, o `GET`
+    // a escondia, e — pior aqui do que lá — como o envelope faz a `vaultKey`
+    // **nunca rodar**, a credencial apagada seguia decifrável por qualquer chave
+    // que o dono viesse a usar, para sempre, sem ele ter como saber que existia.
+    // Não havia purga em lugar nenhum do repositório.
+    //
+    // O motivo real de alguém apagar uma credencial é a senha ter vazado.
+    await prisma.credential.delete({ where: { id } })
     return NextResponse.json({ ok: true })
   } catch {
     return NextResponse.json({ error: "Falha ao apagar o registro." }, { status: 500 })

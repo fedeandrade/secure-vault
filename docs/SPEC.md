@@ -20,7 +20,7 @@ que não pode quebrar.
 | Quem rouba o arquivo/dump do banco | todos os bytes gravados | Nenhum texto claro. Nem senha, nem nome de serviço, nem login |
 | Quem lê o banco em repouso (backup, volume, snapshot) | idem | idem |
 | Quem observa a rede (só no web) | tráfego HTTPS | Só ciphertext sobe; a senha mestra nunca sai do browser |
-| Quem tem o vault mas não a senha mestra | banco completo | Ataque offline ao custo do Argon2id por palpite |
+| Quem tem o vault mas não a senha mestra | banco completo | Ataque offline. ⚠️ No **CLI** o custo por palpite é o Argon2id; no **web** é o **PBKDF2-SHA256**, que não é memory-hard — a diferença importa contra GPU |
 
 ### Contra o que **não** protege — declarado, não esquecido
 
@@ -149,9 +149,12 @@ revisou o desenho.
 | 3.7 | `Session.id` guarda **SHA-256 do token**, nunca o token | Senão vazar o banco entrega todas as sessões ativas — e era esse o argumento a favor de sessão em banco |
 | 3.8 | Cookie com prefixo `__Host-` | Sem ele, subdomínio irmão comprometido sobrescreve a sessão |
 | 3.9 | Inicialização **fora do HTTP** | `POST /api/vault/config` público era takeover remoto: qualquer um inicializava com o próprio salt e trancava o dono para fora |
+| 3.15 | `wrappedVaultKey` e `keyCheck` **só com sessão**; `salt` e `kdfIterations` públicos | Servir o envelope sem autenticação entrega um **oráculo de quebra offline** a quem fizer um único `GET`: 96 ms por palpite, sem banco roubado e sem rastro |
+| 3.16 | O atraso de login é pago **na requisição que errou**, nunca gravado como portão global | `lockedUntil` num registro singleton deixava um estranho trancar o dono para fora a 1 req/s, indefinidamente |
+| 3.17 | Trocar a senha mestra **re-envelopa** a `vaultKey`, nunca sorteia outra | `criarVault` de novo apaga a única cópia da chave que cifrou os registros — vault ilegível para sempre, e o `keyCheck` regravado junto **aprova** |
 | 3.10 | Blob gravado começa com `v1.` | Mesma razão do 2.2 |
 | 3.11 | `keyCheck` conferido **antes** de renderizar; nunca `filter(Boolean)` | Sem isso, chave errada e vault meio-migrado mostram "nenhum item" — e o desfecho realista é o dono recadastrar tudo sob parâmetros que o atacante escolheu |
-| 3.12 | `authValue` validado como base64 de 32 bytes **antes** do argon2id | Senão o login vira amplificador de DoS: 30 POSTs com bytes aleatórios alocam ~2 GB |
+| 3.12 | Semáforo limitando o argon2id concorrente; `authValue` validado antes | ⚠️ **Quem segura a memória é o semáforo**, não a validação: produzir base64 válido de 32 bytes aleatórios custa zero ao atacante. A validação rejeita cedo o obviamente inválido, e só |
 | 3.13 | CSP com `frame-ancestors 'none'` e `object-src 'none'` | `httpOnly` protege o cookie de ser lido, não de ser **usado**: um XSS faz `fetch` na mesma origem e o cookie viaja sozinho |
 | 3.14 | `SESSION_SECRET` exigido com ≥32 bytes **decodificados**, validado preguiçosamente | `changeme` passa numa checagem de presença; validar no topo do módulo quebra `next build` no CI, e o conserto apressado previsível é pôr um default |
 

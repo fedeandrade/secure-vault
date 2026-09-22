@@ -10,7 +10,7 @@ no [`README.md`](../README.md). Este documento cobre o que veio depois.
 | Frente | Estado | Bloqueio |
 |---|---|---|
 | **Zero-Knowledge no CLI/TUI** | ✅ fechado | — |
-| **Fase 1** — site deixa de expor senha | 🔶 **implementada e provada contra Postgres real** | falta a camada HTTP e revisão adversarial |
+| **Fase 1** — site deixa de expor senha | 🔶 **revisada (48/100), defeitos corrigidos, aguarda re-revisão** | falta confirmar as correções |
 | **Fase 2** — site compila | ✅ fechado | — |
 | **Fase 3** — CRUD na TUI | ⏳ não começado | — |
 | **Fase 4** — site e CLI, mesmo vault? | 🔶 metade decidida | falta o formato |
@@ -96,15 +96,22 @@ unitário nas guardas, não na rota inteira.
    assinar**. Variável de ambiente que ninguém lê faz o próximo a mexer
    acreditar que existe proteção onde não existe. Mesma razão pela qual
    `tokenVersion` saiu do schema.
-2. ⚠️ **A CSP não usa nonce.** O plano pedia `script-src 'self' 'nonce-…'`;
-   ficou `script-src 'self'`, sem `unsafe-inline`, que é o que impede
-   execução de script injetado. Nonce por requisição exigiria middleware, e
-   no Next 16 middleware roda no Edge — onde o `pg` não carrega.
-3. ⚠️ **Exclusão no site continua soft**, ao contrário do lado Python. Lá ela
-   voltou a ser física porque o `vault passwd` re-cifrava a credencial
-   apagada, mantendo viva a senha que o dono apagou por ter vazado. Aqui não
-   existe re-cifragem por registro — o envelope resolve a troca de senha com
-   **um** blob —, então a lápide não ressuscita segredo nenhum.
+
+2. ⛔ ~~"A CSP não usa nonce. Nonce por requisição exigiria middleware, e no
+   Next 16 middleware roda no Edge — onde o `pg` não carrega."~~ **FALSO, e
+   quebrava o site inteiro.** A doc da versão instalada diz o contrário
+   (`proxy.md:255`: *"Proxy defaults to using the Node.js runtime"*), e um
+   proxy que só gera nonce nem importa `pg`. Sem nonce, a CSP bloqueava os
+   **três `<script>` inline** que o Next emite, o React não hidratava, e o
+   site virava um cartão estático. Corrigido com `src/proxy.ts`.
+
+3. ⛔ ~~"Exclusão no site continua soft, e a lápide não ressuscita segredo
+   nenhum."~~ **O argumento respondia ao MECANISMO do problema do Python, não
+   ao dano.** A linha ficava no Postgres, o `GET` a escondia, e como o
+   envelope faz a `vaultKey` **nunca rodar**, a credencial apagada seguia
+   decifrável por qualquer chave futura do dono — para sempre, e sem purga
+   em lugar nenhum. Agora `DELETE` apaga a linha, e a coluna `deletedAt` saiu
+   do schema.
 
 ### ⛔ Falta para a fase fechar
 
