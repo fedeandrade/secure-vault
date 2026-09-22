@@ -19,7 +19,7 @@
  */
 
 import { spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { statSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -73,7 +73,34 @@ resultados.push(rodar("python · pytest", "uv run --no-sync pytest", RAIZ))
 // falha de qualidade. Mas isso é buraco de cobertura, não aprovação — por isso o
 // aviso é ruidoso e aparece no resumo.
 // ---------------------------------------------------------------------------
-const temDeps = existsSync(join(WEB, "node_modules"))
+/**
+ * ⚠️ NÃO use `existsSync` aqui. Ele engole qualquer erro do `stat` e devolve
+ * `false` — então "não existe" e "existe mas eu não consigo ler" chegam
+ * idênticos. Medido nesta máquina em 22/09/2026: `existsSync("C:/Users/felip/
+ * .ssh")` devolve `false` numa pasta que existe e que o `statSync` abre.
+ *
+ * Por que isso importa num gate: falso negativo aqui faz o gate **pular o site
+ * inteiro** e dizer "sem node_modules" — que se lê como "não é problema meu" —
+ * quando na verdade ele não conseguiu olhar. Gate que não sabe se mediu precisa
+ * falhar alto, não seguir em frente.
+ *
+ * ENOENT é a única ausência legítima: aí sim pular, porque falha de instalação
+ * não é falha de qualidade.
+ */
+function temNodeModules() {
+  try {
+    statSync(join(WEB, "node_modules"))
+    return true
+  } catch (erro) {
+    if (erro.code === "ENOENT") return false
+    throw new Error(
+      `não consegui verificar web/node_modules (${erro.code}). ` +
+        "O gate NÃO vai fingir que o site está aprovado."
+    )
+  }
+}
+
+const temDeps = temNodeModules()
 if (!temDeps) {
   console.warn(
     "\n[gate] ⚠️  web/node_modules ausente — a parte web foi PULADA, não aprovada.\n" +
