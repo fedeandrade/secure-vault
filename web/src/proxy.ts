@@ -43,9 +43,25 @@ export function proxy(request: NextRequest) {
     // `unsafe-eval` SÓ em dev — o React usa `eval` para reconstruir stack de
     // erro do servidor no browser. Em produção nem o React nem o Next usam.
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${ehDev ? " 'unsafe-eval'" : ""}`,
-    // O Tailwind e o Next injetam <style> inline; com nonce eles passam sem
-    // `unsafe-inline`.
-    `style-src 'self' 'nonce-${nonce}' 'unsafe-inline'`,
+    // ⚠️ **`'unsafe-inline'` saiu daqui, e a razão é que ele NUNCA valeu.** O
+    // comentário anterior dizia que os estilos passavam "sem `unsafe-inline`"
+    // enquanto o token estava escrito na linha — duas afirmações incompatíveis
+    // no mesmo lugar. Pior: pela CSP3 (§"Does a source list allow all inline
+    // behavior"), a presença de QUALQUER nonce-source já faz o browser ignorar
+    // `'unsafe-inline'`. Ou seja, ele não protegia nem liberava nada: só
+    // sugeria ao próximo leitor uma permissão que o browser descarta.
+    //
+    // Medido no HTML servido, nos dois modos, em 22/09/2026:
+    //
+    //   next start : 0 `<style>` inline, 1 `<link rel=stylesheet>`, 0 `style=`
+    //   next dev   : 0 `<style>` inline, 1 `<link rel=stylesheet>`, 0 `style=`
+    //
+    // Ou seja, não há UM estilo inline para liberar — o CSS entra por `<link>`,
+    // que `'self'` cobre. Se um dia entrar `<style>` gerado pelo Next, o nonce
+    // o alcança (`content-security-policy.md:189`); se entrar atributo
+    // `style="..."` escrito à mão, aí sim o browser bloqueia — e a saída certa é
+    // `style-src-attr`, não reabrir `'unsafe-inline'` para o documento inteiro.
+    `style-src 'self' 'nonce-${nonce}'`,
     "img-src 'self' blob: data:",
     "font-src 'self'",
     // O vault só fala com a própria origem. Exfiltração para outro host morre
@@ -59,8 +75,17 @@ export function proxy(request: NextRequest) {
   ].join("; ")
 
   const cabecalhos = new Headers(request.headers)
-  // O Next lê `x-nonce` da requisição e carimba o nonce nos inline que ele
-  // mesmo gera. Sem esta linha o nonce do cabeçalho não bate com nada.
+  // ⚠️ **O que carimba o nonce é a linha de baixo, não o `x-nonce`** — eu tinha
+  // escrito o contrário aqui. A doc da versão instalada descreve o mecanismo em
+  // três passos (`content-security-policy.md:185-187`): o proxy gera o nonce, o
+  // Next **parseia o cabeçalho `Content-Security-Policy` da requisição** e
+  // extrai o valor pelo padrão `'nonce-{valor}'`, e só então o aplica.
+  //
+  // O `x-nonce` existe para a PÁGINA ler o nonce (via `headers()`) quando ela
+  // precisa carimbar um `<Script>` próprio. Nenhuma página daqui faz isso hoje;
+  // a linha fica porque é o contrato que a doc documenta e custa nada — mas
+  // remover o `Content-Security-Policy` da requisição, achando que o `x-nonce`
+  // basta, apaga o nonce de TODOS os scripts e derruba o site em silêncio.
   cabecalhos.set("x-nonce", nonce)
   cabecalhos.set("Content-Security-Policy", csp)
 

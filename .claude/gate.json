@@ -1,5 +1,6 @@
 {
   "command": "node scripts/gate.mjs",
   "timeoutMs": 150000,
-  "_porque": "Um script em vez de encadear comandos: o hook roda com shell:true (cmd.exe no Windows), e `a && b && c` com um `cd` no meio esconde tudo que vem depois da primeira falha. O scripts/gate.mjs roda os DOIS lados (Python e web) e mostra os dois no resumo. Medido em 22/09/2026: ~29s no total, bem abaixo dos 150s daqui, que por sua vez ficam abaixo dos 180s do proprio hook Stop. Provado que reprova: com o IV do AES-GCM fixado em zeros, o gate saiu 1 e apontou `web . vitest`; restaurado, saiu 0."
+  "_porque": "Um script em vez de encadear comandos: o hook roda com shell:true (cmd.exe no Windows), e `a && b && c` com um `cd` no meio esconde tudo que vem depois da primeira falha. O scripts/gate.mjs roda os DOIS lados (Python e web) e mostra os dois no resumo. Medido em 22/09/2026 com DATABASE_URL definida (o caso mais lento, porque roda os 12 testes de migration em Postgres e os 15 de rota que sobem o Next): 53,1s no total, ainda bem abaixo dos 150s daqui, que por sua vez ficam abaixo dos 180s do proprio hook Stop. Sem DATABASE_URL sao ~29s, e o gate AVISA que pulou os testes de rota: pulado nao e verde. Provado que reprova: com o IV do AES-GCM fixado em zeros, o gate saiu 1 e apontou `web . vitest`; restaurado, saiu 0.",
+  "_variavel_que_muda_o_que_e_medido": "DATABASE_URL. Sem ela o gate NAO mede a camada HTTP do site — 401 por rota, CSP, nonce no HTML servido e o atraso de login. Foi exatamente esse buraco que deixou a CSP quebrar o site inteiro sem nenhum teste reprovar."
 }

@@ -10,8 +10,14 @@ import { criarSessao } from "@/lib/session"
 /**
  * Login: recebe o `authValue` derivado no browser e devolve uma sessão.
  *
- * ⚠️ **A ORDEM dos passos aqui é segurança, não estilo:** formato → atraso →
- * semáforo → argon2id.
+ * ⚠️ **A ORDEM dos passos aqui é segurança, não estilo:** formato → semáforo →
+ * argon2id → (se errou) atraso, já fora do semáforo.
+ *
+ * ⚠️ **A versão anterior pagava o atraso ANTES do `verify`**, e o comentário
+ * dizia que "o dono que digita a senha certa entra na hora" — era falso. Como
+ * `failedAttempts` é global (o vault é de um dono só), 9 palpites errados de um
+ * estranho colocavam o atraso no teto de 30 s, e o **dono**, com a senha certa,
+ * esperava os mesmos 30 s antes de qualquer verificação acontecer.
  *
  * ⚠️ **Mas o argumento que eu tinha escrito para a validação de formato era
  * errado**, e vale corrigir para ninguém "otimizar" o guard fora. Ele NÃO é o
@@ -65,21 +71,9 @@ export async function POST(req: Request) {
   }
 
   const cfg = await prisma.vaultConfig.findUnique({ where: { id: 1 } })
-
-  // ⛔ O atraso é pago POR ESTA REQUISIÇÃO, não gravado como portão global.
-  //
-  // A versão anterior escrevia `lockedUntil` em `VaultConfig`, que é singleton:
-  // qualquer um mandando 1 requisição por segundo com bytes aleatórios mantinha
-  // o portão fechado para **todo mundo, inclusive o dono**, indefinidamente. Da
-  // 9ª falha em diante o atraso já estava no teto de 30 s, e cada 429 custava ao
-  // atacante praticamente nada — ele saía antes do semáforo e antes do argon2id.
-  // O `Retry-After` ainda dizia a ele quando a janela abria.
-  //
-  // Pagando aqui, o custo recai sobre quem errou. O dono que digita a senha
-  // certa entra na hora, mesmo com alguém martelando a rota em paralelo.
   const atraso = atrasoDe(cfg?.failedAttempts ?? 0)
-  if (atraso > 0) await esperar(atraso)
 
+  let confere = false
   await esperarVaga()
   try {
     // Vault não inicializado verifica contra um hash-dummy BEM-FORMADO e devolve
@@ -89,33 +83,40 @@ export async function POST(req: Request) {
       cfg?.authHash ??
       "$argon2id$v=19$m=65536,t=3,p=4$c2VjdXJlLXZhdWx0LWR1bW15MDAwMA$Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4"
 
-    let confere = false
     try {
       confere = await verify(hashAlvo, authValue, CUSTO_ARGON)
     } catch {
       confere = false
     }
-
-    if (!confere) {
-      if (cfg) {
-        await prisma.vaultConfig.update({
-          where: { id: 1 },
-          data: { failedAttempts: cfg.failedAttempts + 1 },
-        })
-      }
-      return NextResponse.json({ error: "Credenciais inválidas." }, { status: 401 })
-    }
-
-    if (cfg && cfg.failedAttempts !== 0) {
-      await prisma.vaultConfig.update({
-        where: { id: 1 },
-        data: { failedAttempts: 0, lockedUntil: null },
-      })
-    }
-
-    await criarSessao()
-    return NextResponse.json({ ok: true })
   } finally {
+    // ⛔ O semáforo é liberado AQUI, antes do atraso. Pagar os 30 s com a vaga
+    // na mão daria ao atacante um jeito barato de ocupar as duas vagas e negar
+    // o login ao dono — trocaria um problema de custo por um de disponibilidade.
     emVoo--
   }
+
+  if (!confere) {
+    if (cfg) {
+      // `increment` e não `cfg.failedAttempts + 1`: duas requisições que leem o
+      // mesmo valor e escrevem `lido + 1` contam UMA falha. Com o incremento no
+      // banco, N requisições concorrentes contam N.
+      await prisma.vaultConfig.update({
+        where: { id: 1 },
+        data: { failedAttempts: { increment: 1 } },
+      })
+    }
+    // ⛔ O atraso é pago **só aqui**, por quem errou, e fora do semáforo.
+    if (atraso > 0) await esperar(atraso)
+    return NextResponse.json({ error: "Credenciais inválidas." }, { status: 401 })
+  }
+
+  if (cfg && cfg.failedAttempts !== 0) {
+    await prisma.vaultConfig.update({
+      where: { id: 1 },
+      data: { failedAttempts: 0 },
+    })
+  }
+
+  await criarSessao()
+  return NextResponse.json({ ok: true })
 }

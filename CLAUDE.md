@@ -29,10 +29,13 @@ comandos e stack estão no [`README.md`](README.md); o contrato de segurança em
 node scripts/gate.mjs
 ```
 
-Roda os dois lados — Python (`ruff` + `pytest`) e web (`tsc` + `eslint` +
-`vitest` + `next build`) — e é o mesmo comando que o hook `Stop` executa por
-`.claude/gate.json`. ~29s.
+Roda os dois lados — Python (`ruff` + `pytest`) e web (`typegen` + `tsc` +
+`eslint` + `vitest` + `next build` + a trava de prerender) — e é o mesmo comando
+que o hook `Stop` executa por `.claude/gate.json`. ~40s.
 
+- ⚠️ **Sem `DATABASE_URL` o gate PULA os testes de rota** — os únicos que sobem
+  o Next e provam a camada HTTP (401 em cada rota, CSP, nonce, o atraso de
+  login). Ele avisa em voz alta; "pulado" **não** é verde.
 - **Não encadeie `a && b` no `gate.json`.** O script existe porque o primeiro
   `&&` que falha esconde todo o resto; aqui todos os passos rodam e o resumo
   mostra os dois lados.
@@ -41,6 +44,9 @@ Roda os dois lados — Python (`ruff` + `pytest`) e web (`tsc` + `eslint` +
 - **Nunca passe `-q` extra ao pytest.** O `addopts` do `pyproject.toml` já tem um;
   o segundo vira `-qq` e **esconde a linha de total**. Uma medição deste projeto
   já leu "58 testes" onde havia 130.
+- ⛔ **`next typegen` roda ANTES do `tsc`.** O Next 16 gera `LayoutProps`/
+  `PageProps` em `.next/types/`. Sem isso o gate só passava por sobrar um
+  `.next/` velho — em clone limpo e no CI o `tsc` dava `TS2304`.
 
 ## Armadilhas medidas neste repositório
 
@@ -51,6 +57,10 @@ Roda os dois lados — Python (`ruff` + `pytest`) e web (`tsc` + `eslint` +
 | `PrismaConfigEnvError` no CI | `env("DATABASE_URL")` do `prisma/config` **não é preguiçoso**. Use `process.env["DATABASE_URL"]` — o job `web` roda sem a variável de propósito |
 | `%` na senha do banco quebra o Alembic | O `alembic.ini` passa por interpolação de `configparser` |
 | Heredoc do Bash comendo `\` mesmo com delimitador citado | Escreva JSON e conteúdo com `\` pelo `node -e` ou pela ferramenta Write, nunca por heredoc |
+| Arquivo de teste vira **"0 test"** em vez de reprovar | O Vitest **não lê `paths` do `tsconfig`**. Import por `@/...` quebra a coleção do arquivo inteiro. O alias está em `vitest.config.mts` |
+| Site sem NENHUM script executando em produção, verde em dev | `/` prerenderizada. A CSP com nonce exige render por requisição: sem `await connection()` em `src/app/page.tsx` o HTML nasce no build, sem nonce, e `'strict-dynamic'` faz o browser ignorar `'self'`. O gate tem uma trava lendo `prerender-manifest.json` |
+| Teste de rota aprova código que não é o do checkout | `spawn(..., {shell:true})` no Windows cria `cmd.exe → npx.cmd → node`; `.kill()` mata só o `cmd.exe`. Use `taskkill /T /F` — e o `beforeAll` **recusa** rodar se a porta já estiver ocupada |
+| `'unsafe-inline'` escrito na CSP e sem efeito | Pela CSP3, **qualquer** nonce-source na lista faz o browser ignorar `'unsafe-inline'` — inclusive para atributos `style=`. Token inerte que engana quem lê |
 
 ## Limites
 

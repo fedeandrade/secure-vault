@@ -82,8 +82,14 @@ model VaultConfig {
   keyCheck String
 
   /// Atraso exponencial no login. Lockout duro seria auto-DoS: há um usuário só.
-  failedAttempts Int       @default(0)
-  lockedUntil    DateTime?
+  ///
+  /// ⛔ **Não existe `lockedUntil`, e a ausência é decisão.** A migration inicial
+  /// criou a coluna; ela ficou órfã — escrita no login e lida por ninguém. Pior
+  /// que inútil: uma coluna com esse nome convida o próximo a "só ligar o
+  /// lockout", e num registro singleton isso deixa um estranho, a 1 req/s,
+  /// trancar o **dono** para fora indefinidamente. O atraso é pago pela
+  /// requisição que errou, em `api/auth/login/route.ts`.
+  failedAttempts Int @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
