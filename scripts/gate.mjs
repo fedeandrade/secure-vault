@@ -19,7 +19,7 @@
  */
 
 import { spawnSync } from "node:child_process"
-import { statSync } from "node:fs"
+import { readFileSync, statSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -64,6 +64,16 @@ const resultados = []
 // leu "58 testes" onde havia 130.
 // ---------------------------------------------------------------------------
 resultados.push(rodar("python · ruff", "uv run --no-sync ruff check .", RAIZ))
+// ⚠️ Mesmo buraco do `DATABASE_URL` do site, do outro lado: sem
+// `TEST_DATABASE_URL` os 12 testes de `test_migrations.py` são PULADOS e o
+// total continua verde. São justamente os que provam que a migration recusa
+// vault populado — a guarda que impede corromper credencial em silêncio.
+if (!process.env.TEST_DATABASE_URL) {
+  console.warn(
+    "\n[gate] ⚠️  TEST_DATABASE_URL ausente — os 12 testes de MIGRATION foram\n" +
+      "[gate]     PULADOS, não aprovados. Eles só rodam contra Postgres real.\n"
+  )
+}
 resultados.push(rodar("python · pytest", "uv run --no-sync pytest", RAIZ))
 
 // ---------------------------------------------------------------------------
@@ -127,7 +137,20 @@ if (!temDeps) {
   // decide funciona. Sem banco eles somem em silêncio no meio de um "21 passed",
   // e "pulado" lido como "verde" foi exatamente o buraco que deixou a CSP
   // quebrar o site sem ninguém notar.
-  if (!process.env.DATABASE_URL) {
+  // O gate roda da RAIZ; o `.env` do site mora em `web/`. Ler aqui é só para o
+  // aviso abaixo dizer a verdade — quem de fato carrega a variável para os
+  // testes é o `import "dotenv/config"` do `vitest.config.mts`. Sem isto o gate
+  // anunciava "PULADOS" numa rodada em que eles rodaram, que é o tipo de aviso
+  // que ensina a ignorar aviso.
+  const temBancoNoEnvDoWeb = (() => {
+    if (process.env.DATABASE_URL) return true
+    try {
+      return /^\s*DATABASE_URL\s*=\s*\S/m.test(readFileSync(join(WEB, ".env"), "utf8"))
+    } catch {
+      return false
+    }
+  })()
+  if (!temBancoNoEnvDoWeb) {
     console.warn(
       "\n[gate] ⚠️  DATABASE_URL ausente — os testes de ROTA (401, CSP, nonce)\n" +
         "[gate]     foram PULADOS, não aprovados. Eles sobem o Next e são os\n" +
@@ -138,6 +161,41 @@ if (!temDeps) {
   // `next build` entra porque é o que pega erro que o tsc não vê: rota que não
   // resolve, import de módulo só-servidor no cliente, config inválida.
   resultados.push(rodar("web · next build", "npx next build", WEB))
+
+  // ⛔ Trava mecânica contra uma regressão que NENHUM teste daqui enxerga.
+  //
+  // A CSP com nonce (`web/src/proxy.ts`) só vale para página renderizada por
+  // requisição. Se `/` voltar a ser prerenderizada, o HTML é gerado no build —
+  // quando não existe requisição nem cabeçalho — e sai **sem nonce**. Com
+  // `'strict-dynamic'` no `script-src`, o `'self'` passa a ser ignorado pelo
+  // browser e **nenhum** script executa: nem os inline, nem os 7 com `src`.
+  //
+  // Medido em 22/09/2026: foi exatamente isso que aconteceu. Em `next start`,
+  // 9 `<script>` e 0 `nonce=`. Os testes de rota não viram porque sobem
+  // `next dev`, onde tudo é dinâmico. Basta alguém remover o `await connection()`
+  // de `src/app/page.tsx` para o buraco voltar, calado.
+  resultados.push({
+    rotulo: "web · '/' fora do prerender",
+    ...(() => {
+      const inicio = Date.now()
+      try {
+        const manifesto = JSON.parse(
+          readFileSync(join(WEB, ".next", "prerender-manifest.json"), "utf8")
+        )
+        const estaticas = Object.keys(manifesto.routes ?? {})
+        const ok = !estaticas.includes("/")
+        return {
+          ok,
+          ms: Date.now() - inicio,
+          detalhe: ok
+            ? ""
+            : "'/' voltou a ser estática: a CSP com nonce não se aplica e NENHUM script executa em produção. Falta `await connection()` em src/app/page.tsx?",
+        }
+      } catch (erro) {
+        return { ok: false, ms: Date.now() - inicio, detalhe: `não li o prerender-manifest: ${erro.code ?? erro.message}` }
+      }
+    })(),
+  })
 }
 
 // ---------------------------------------------------------------------------

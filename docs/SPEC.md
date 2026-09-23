@@ -150,13 +150,13 @@ revisou o desenho.
 | 3.8 | Cookie com prefixo `__Host-` | Sem ele, subdomínio irmão comprometido sobrescreve a sessão |
 | 3.9 | Inicialização **fora do HTTP** | `POST /api/vault/config` público era takeover remoto: qualquer um inicializava com o próprio salt e trancava o dono para fora |
 | 3.15 | `wrappedVaultKey` e `keyCheck` **só com sessão**; `salt` e `kdfIterations` públicos | Servir o envelope sem autenticação entrega um **oráculo de quebra offline** a quem fizer um único `GET`: 96 ms por palpite, sem banco roubado e sem rastro |
-| 3.16 | O atraso de login é pago **na requisição que errou**, nunca gravado como portão global | `lockedUntil` num registro singleton deixava um estranho trancar o dono para fora a 1 req/s, indefinidamente |
+| 3.16 | O atraso de login é pago **depois do `verify`, só por quem errou**, fora do semáforo, e nunca gravado como portão global | Três defeitos distintos no mesmo lugar: (a) `lockedUntil` num registro singleton deixava um estranho trancar o dono a 1 req/s, indefinidamente — a coluna foi **removida**; (b) pagar o atraso ANTES do `verify` fazia o **dono com a senha certa** esperar os 30 s que o estranho acumulou; (c) pagar com a vaga do semáforo na mão deixava 2 requisições erradas bloquearem o login por 30 s |
 | 3.17 | Trocar a senha mestra **re-envelopa** a `vaultKey`, nunca sorteia outra | `criarVault` de novo apaga a única cópia da chave que cifrou os registros — vault ilegível para sempre, e o `keyCheck` regravado junto **aprova** |
 | 3.10 | Blob gravado começa com `v1.` | Mesma razão do 2.2 |
 | 3.11 | `keyCheck` conferido **antes** de renderizar; nunca `filter(Boolean)` | Sem isso, chave errada e vault meio-migrado mostram "nenhum item" — e o desfecho realista é o dono recadastrar tudo sob parâmetros que o atacante escolheu |
 | 3.12 | Semáforo limitando o argon2id concorrente; `authValue` validado antes | ⚠️ **Quem segura a memória é o semáforo**, não a validação: produzir base64 válido de 32 bytes aleatórios custa zero ao atacante. A validação rejeita cedo o obviamente inválido, e só |
 | 3.13 | CSP com `frame-ancestors 'none'` e `object-src 'none'` | `httpOnly` protege o cookie de ser lido, não de ser **usado**: um XSS faz `fetch` na mesma origem e o cookie viaja sozinho |
-| 3.14 | `SESSION_SECRET` exigido com ≥32 bytes **decodificados**, validado preguiçosamente | `changeme` passa numa checagem de presença; validar no topo do módulo quebra `next build` no CI, e o conserto apressado previsível é pôr um default |
+| 3.14 | **Não existe `SESSION_SECRET`** — e nenhum segredo de sessão é introduzido | ⚠️ **Esta linha já afirmou o oposto.** O plano previa o segredo por herança de sessão assinada; a implementação usa sessão em **banco** (3.6/3.7), onde o token é aleatório e o `id` é o SHA-256 dele. Não há nada para assinar. Uma variável exigida e não usada só cria um segredo a mais para vazar — e a versão anterior desta linha contradizia `session.ts`, o `.env.example` e o ROADMAP ao mesmo tempo |
 
 ---
 
@@ -199,6 +199,12 @@ verificou — torceu.**
 | `authValue` malformado é recusado antes do argon2id | `web/src/lib/auth-guardas.test.ts` |
 | O atraso do login tem teto (senão vira auto-DoS) | idem |
 | Origem cruzada é recusada, inclusive as parecidas | idem |
+| 401 sem cookie **na rota**, não só na guarda | `web/src/app/api/rotas.test.ts` — sobe o Next e mede as 4 |
+| `/config` não entrega `wrappedVaultKey` nem `keyCheck` sem sessão | idem |
+| Não existe `POST /api/vault/config` | idem — espera 405 |
+| Todo `<script>` inline do HTML servido carrega o nonce | idem — baixa a página, não só o cabeçalho |
+| **O atraso pune quem errou, não o dono** | idem — com `failedAttempts=6`, medido: errado **4086 ms**, senha certa **98 ms** |
+| `/` não volta a ser prerenderizada (senão não há nonce) | `scripts/gate.mjs` — lê `.next/prerender-manifest.json` |
 | Nada em claro no banco (web) | `web/scripts/prova-e2e.ts` — lê `Credential` com SQL cru e procura serviço, login e senha |
 | O envelope reabre depois do banco | idem |
 | Troca de senha não toca os registros | idem |

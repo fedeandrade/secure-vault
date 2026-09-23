@@ -11,8 +11,14 @@ pelo hook do gate, não só pelo shell — `GATE VERDE` no
 `~/.claude/gate-cache/ultima-execucao.log`, 22/09/2026.
 
 Os 12 `skipped` são **todos** de `test_migrations.py` e só rodam com
-`TEST_DATABASE_URL` apontando para um Postgres real. **Postgres não foi medido
-nesta rodada** — o que vale aqui é SQLite.
+`TEST_DATABASE_URL` apontando para um Postgres real.
+
+✅ **Eles deixaram de ser hipótese em 22/09/2026: 267 passed contra o PostgreSQL
+18.6 do mini PC** — a primeira vez que a suíte inteira rodou com Postgres de
+verdade. Dois defeitos da própria fixture apareceram só aí: a conexão de
+administração usava `postgres` fixo em vez do database configurado, e
+`str(URL)` do SQLAlchemy **mascara a senha como `***`** (o conserto é
+`render_as_string(hide_password=False)`).
 
 ⛔ ~~Estava VERMELHA no começo do dia: **41 failed, 195 passed, 12 skipped, 14
 errors** — 55 itens.~~ A migração Zero-Knowledge foi **terminada em 22/09/2026**
@@ -291,19 +297,66 @@ vezes. Duas decisões de segurança foram gravadas em comentário no schema:
 **removido** de `VaultConfig` — com sessão em banco, revogar é `deleteMany`, e
 coluna sem leitor faz o próximo a mexer acreditar que há revogação onde não há.
 
-**Falta a Fase 1 inteira em código.** Enquanto ela não fechar, o site continua
-com salt global fixo e API sem autenticação: **não pode ir ao ar.**
+A Fase 1 foi implementada no mesmo dia — ver a seção seguinte.
 
-### ⛔ O CI do fork NUNCA rodou — e isso não é o mesmo que passar
+## A Fase 1 em código, e as DUAS revisões que a reprovaram (22/09/2026)
 
-Medido em 22/09/2026 com `gh run list`: **todas** as execuções do workflow neste
-branch estão `completed / action_required`, com **duração 0s**. É a política do
-GitHub para PR vindo de fork: o workflow espera aprovação manual do mantenedor.
-Ou seja, o job `web` que este trabalho acrescentou **existe no arquivo e nunca
-foi executado no GitHub**, e o job Python também não. Só o GitGuardian roda.
+O site não tem mais salt global fixo nem API sem autenticação. O que existe:
+`crypto.ts` (HKDF, chave não-exportável, envelope, `keyCheck`, blob `v1.`),
+`session.ts` (sessão em banco, SHA-256 do token, cookie `__Host-`), as 4 rotas do
+vault com 401, `proxy.ts` (CSP com nonce por requisição) e `vault-init.ts`
+(inicialização fora do HTTP). **20/20** em `npm run prova:e2e` contra o
+PostgreSQL 18.6 do mini PC; **37 testes** no `vitest`, 15 deles subindo o Next.
 
-Quem for afirmar "o CI está verde" precisa primeiro do Renan aprovando a
-execução no PR #19.
+⛔ **Duas revisões adversariais independentes, as duas REPROVA — 48/100 e
+45/100.** Isso importa mais que a nota: a segunda achou **uma regressão que o
+conserto da primeira introduziu**.
+
+1. A primeira achou que a CSP sem nonce bloqueava os `<script>` inline do Next —
+   o site não hidratava e virava um cartão estático. E que a troca de senha
+   chamava `criarVault`, sorteando uma `vaultKey` nova: **destruía o vault** e o
+   `keyCheck` regravado junto dizia `true`.
+2. O conserto da CSP passou a funcionar **só em `next dev`**. Em produção `/`
+   era prerenderizada, o HTML nascia no build (quando não há requisição nem
+   cabeçalho) e saía **sem nonce** — com `'strict-dynamic'`, o `'self'` passa a
+   ser ignorado e **nenhum** script executa. Medido: 9 `<script>`, 0 `nonce=`.
+   Conserto: `await connection()` em `src/app/page.tsx` (o componente cliente
+   virou `VaultApp.tsx`) e uma **trava no gate** lendo `prerender-manifest.json`,
+   porque nenhum teste enxerga isso — eles rodam contra `next dev`.
+
+O que mais saiu das duas revisões, tudo corrigido e cada item com teste:
+`/config` servia o envelope sem sessão (oráculo de quebra offline a 96 ms por
+palpite); `lockedUntil` global deixava um estranho trancar o dono (coluna
+**removida**); o atraso de login era pago **antes** do `verify`, então o dono com
+a senha certa esperava o que o estranho acumulou — **medido depois do conserto:
+atacante 4086 ms, dono 98 ms**; `failedAttempts` em read-modify-write contava N
+falhas concorrentes como 1; e o servidor de teste sobrevivia ao `afterAll` no
+Windows, o que faz a suíte **aprovar código velho com verde**.
+
+⛔ **A fase não fecha sem uma terceira revisão que aprove.** Duas seguidas
+acharam crítico; enquanto não houver uma sem achado crítico, `web/` não sobe.
+
+### O CI do fork: de nunca-executado a verde
+
+⚠️ Medido em 22/09/2026, antes: **todas** as execuções estavam
+`completed / action_required` com **duração 0s** — política do GitHub para PR
+vindo de fork, que espera aprovação manual do mantenedor. "Adicionei um job ao
+CI" não era o mesmo que "o CI passou".
+
+**Resolvido ligando o CI no próprio fork** (decisão do Felipe): os pushes para
+`fedeandrade/secure-vault` executam de verdade, e passaram a ficar **verdes**.
+O PR #19 contra `ReCroffi` continua dependendo do Renan aprovar a execução lá.
+
+Duas causas de vermelho foram achadas e consertadas nesse caminho, e a segunda
+corrige uma hipótese minha errada:
+
+1. `tsc` rodava antes do `next typegen`. Local passava só porque sobrava um
+   `.next/` de build anterior; em clone limpo dava `TS2304: LayoutProps`.
+2. ⛔ Eu atribuí a falha do Postgres do CI a **colisão de porta — e estava
+   errado**. A causa real, achada reproduzindo local e lendo o log do servidor:
+   **`str(URL)` do SQLAlchemy mascara a senha como `***`**, então a fixture
+   conectava com uma senha literalmente errada. O conserto é
+   `render_as_string(hide_password=False)`.
 
 O que deu para provar **localmente**, e prova o essencial do job novo:
 `npm ci --dangerously-allow-all-scripts` (esta máquina tem trava de
@@ -519,14 +572,17 @@ vira injeção.
 
 ### O site ganhou harness de teste
 
-`vitest` instalado, `web/src/lib/crypto.test.ts` com **7 testes**. A Fase 1
+`vitest` instalado, `web/src/lib/crypto.test.ts` com 7 testes. A Fase 1
 exigia teste que inspeciona payload e teste negativo — **sem runner, ela não
 conseguia fechar pelos próprios critérios de aceite**.
 
-Dois testes documentam DEFEITO, de propósito, e estão marcados `⚠️ HOJE`:
-a chave sai `extractable: true` (um XSS faz `exportKey`) e o blob é `iv.ct` sem
-marcador de versão. **Quando a Fase 1 quebrá-los é progresso** — mas o teste tem
-de ser REESCRITO para a garantia nova, nunca apagado.
+Dois deles documentavam DEFEITO de propósito (chave `extractable: true`, blob sem
+marcador de versão). A Fase 1 quebrou os dois, e eles foram **reescritos** para
+exigir a garantia nova — não apagados. Hoje são **37 testes** em 3 arquivos.
+
+⚠️ **O Vitest não lê `paths` do `tsconfig`.** Um import por `@/...` não quebra o
+teste: quebra a **coleção do arquivo**, que aparece como `0 test` e some de um
+total que continua verde. O alias está em `vitest.config.mts`.
 
 Junto subiu `@types/node` de `^20` para `^22`: o vitest 5 exige, e `^20` já
 estava vencido — o runtime local é Node 24 e o CI é 22.
@@ -542,26 +598,26 @@ medido: `permissions.push = false` para o Felipe naquele repo.
 
 ## Pendências
 
-- [ ] **Fase 1 do site, em código** — derivação HKDF com chave não-exportável,
-      envelope `wrappedVaultKey`, sessão em banco, piso de KDF, init fora do
-      HTTP, blob `v1.`, `keyCheck`, ordem da rota de login, CSP. O schema e o
-      **runner de teste** já estão prontos; falta o resto. **Enquanto não fechar, o
-      site não pode ir ao ar.**
+- [x] ~~**Fase 1 do site, em código.**~~ **Feita em 22/09/2026** — ver "A Fase 1
+      em código, e as DUAS revisões que a reprovaram".
+- [ ] ⛔ **Terceira revisão adversarial da Fase 1.** Duas reprovaram (48/100 e
+      45/100) e a segunda achou regressão introduzida pelo conserto da primeira.
+      **Enquanto não houver uma revisão sem achado crítico, o site não vai ao ar.**
 - [ ] **Fase 3 — CRUD na TUI.** `src/vault/tui/app.py` é só leitura; faltam
       adicionar, editar e apagar.
 - [ ] **Fase 4, metade restante** — o banco foi decidido; falta decidir se site
       e CLI passam a compartilhar o mesmo *formato* de vault (recomendação: A).
-- [ ] ⛔ **A migration do site nunca rodou contra um Postgres de verdade.** Ela
-      foi gerada **offline** (`prisma migrate diff --from-empty --to-schema`),
-      porque não há Docker nesta máquina. **Tentado em 22/09/2026 e falhou por
-      causa do ambiente, não do projeto:** o Postgres portátil do EnterpriseDB
-      subiu na 55433, mas morreu ao criar o database com
-      `exception 0xC0000142` (falha de inicialização de DLL no Windows) — havia
-      11 processos `postgres.exe` de outras sessões rodando ao mesmo tempo.
-      **Como fechar:** `docker compose up postgres-web` (ou o portátil, com as
-      outras instâncias paradas), `npm run db:deploy`, e então um
-      `prisma.credential.count()`. É esse count que prova que o adapter conecta;
-      `tsc --noEmit` passa sem tocar no banco e **não prova nada disso**.
+- [x] ~~⛔ **A migration do site nunca rodou contra um Postgres de verdade.**~~
+      **Resolvido em 22/09/2026**, mas **não** como estava escrito aqui. O
+      Postgres portátil do EnterpriseDB morreu duas vezes com
+      `exception 0xC0000142` (falha de inicialização de DLL), e Docker não estava
+      instalado. A saída foi **instalar PostgreSQL 18.6 no mini PC** (`10.42.0.1`,
+      database `secure_vault_web`). As 3 migrations estão aplicadas lá, e a
+      `prova:e2e` roda contra ele — 20/20.
+- [ ] **Docker nesta máquina** (escolha do Felipe, 22/09/2026, para o Postgres
+      do site deixar de depender do mini PC). `winget` tem
+      `Docker.DockerDesktop 4.91.0`. **Depende do Felipe:** a instalação pede UAC
+      e provavelmente reinício do Windows.
 - [ ] Preencher os dois TODOs pessoais do README (Motivação; LinkedIn/contato).
       São as únicas seções que só o Renan pode escrever.
 - [x] ~~Decidir com o Felipe/Renan se esta branch vira PR para `develop`.

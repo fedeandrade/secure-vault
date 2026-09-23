@@ -10,10 +10,14 @@
  * `DATABASE_URL`; sem ela os testes são **pulados**, nunca aprovados em falso.
  */
 
-import { spawn, type ChildProcess } from "node:child_process"
+import { spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { setTimeout as esperar } from "node:timers/promises"
 
+import { hash } from "@node-rs/argon2"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+
+import { criarVault, derivarChaves, MIN_KDF_ITERATIONS } from "../../lib/crypto"
+import { prisma } from "../../lib/prisma"
 
 const TEM_BANCO = Boolean(process.env.DATABASE_URL)
 const PORTA = 3987
@@ -34,8 +38,58 @@ async function esperarSubir(tentativas = 60): Promise<boolean> {
   return false
 }
 
+/** Alguém já está escutando na porta? */
+async function portaOcupada(): Promise<boolean> {
+  try {
+    await fetch(`${BASE}/api/vault/config`, { signal: AbortSignal.timeout(2000) })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * ⛔ **Matar o processo não basta no Windows, e o modo de falhar é silencioso.**
+ *
+ * `spawn(..., { shell: true })` não executa o Next: executa `cmd.exe`, que
+ * executa `npx.cmd`, que executa o `node`. `servidor.kill()` mata o `cmd.exe` e
+ * o neto continua escutando na 3987. Medido em 22/09/2026: o PID 6876 seguiu na
+ * porta depois de a suíte terminar "verde".
+ *
+ * O estrago não é vazamento de processo — é **teste que valida código antigo**.
+ * A rodada seguinte encontra a porta ocupada, bate no servidor velho e aprova
+ * uma rota que o diff acabou de quebrar.
+ */
+function matarArvore(p: ChildProcess | undefined) {
+  if (!p?.pid) return
+  if (process.platform === "win32") {
+    // `/T` derruba a árvore inteira (cmd → npx → node); `/F` não pergunta.
+    spawnSync(`taskkill /pid ${p.pid} /T /F`, { shell: true, stdio: "ignore" })
+  } else {
+    // Com `detached`, o filho lidera o próprio grupo: PID negativo mata o grupo.
+    try {
+      process.kill(-p.pid, "SIGTERM")
+    } catch {
+      p.kill("SIGTERM")
+    }
+  }
+}
+
 beforeAll(async () => {
   if (!TEM_BANCO) return
+
+  // ⛔ Recusar em vez de reaproveitar. Um servidor já na porta é, por definição,
+  // de outro checkout ou de outra rodada — e aprovar o binário dele é pior que
+  // não rodar teste nenhum, porque sai verde.
+  if (await portaOcupada()) {
+    throw new Error(
+      `já existe algo escutando em ${BASE}. Estes testes NÃO vão rodar contra um ` +
+        "servidor que eles não subiram — seria aprovar código que não é o deste " +
+        "checkout. Derrube-o (Windows: `netstat -ano | findstr :" +
+        `${PORTA}\` e \`taskkill /PID <pid> /F\`) e rode de novo.`
+    )
+  }
+
   // String única com `shell: true`: com lista de argumentos o Node 24 emite
   // DEP0190 (argumentos concatenados sem escape), e sem shell o `npx.cmd` do
   // Windows dá EINVAL. A porta é uma constante deste arquivo, não entrada.
@@ -43,14 +97,18 @@ beforeAll(async () => {
     cwd: process.cwd(),
     shell: true,
     stdio: "ignore",
+    detached: process.platform !== "win32",
     env: { ...process.env },
   })
   const subiu = await esperarSubir()
-  if (!subiu) throw new Error("o Next não subiu a tempo")
+  if (!subiu) {
+    matarArvore(servidor)
+    throw new Error("o Next não subiu a tempo")
+  }
 }, 120_000)
 
 afterAll(() => {
-  servidor?.kill()
+  matarArvore(servidor)
 })
 
 describe.skipIf(!TEM_BANCO)("rotas sem sessão", () => {
@@ -157,6 +215,93 @@ describe.skipIf(!TEM_BANCO)("login", () => {
     })
     expect(res.status).toBe(403)
   })
+})
+
+describe.skipIf(!TEM_BANCO)("atraso de login", () => {
+  /**
+   * ⛔ **O defeito que este bloco fixa: o atraso punia o DONO.**
+   *
+   * `failedAttempts` é global — o vault tem um usuário só. A versão anterior
+   * pagava `atrasoDe(failedAttempts)` **antes** do `verify`, então 9 palpites
+   * errados de um estranho colocavam o atraso no teto e o dono, digitando a
+   * senha **certa**, esperava 30 s antes de qualquer verificação acontecer.
+   * O comentário na rota afirmava o contrário, e nenhum teste olhava.
+   *
+   * A prova precisa das duas metades: o atacante continua pagando, o dono não.
+   * Um teste só da metade "o dono entra rápido" passaria se alguém removesse o
+   * atraso inteiro.
+   */
+  const SENHA = "Senha-Do-Teste-De-Atraso-#2026"
+  /** `atrasoDe(6)` = 250 × 2⁴ = 4000 ms. Grande o bastante para ser inequívoco. */
+  const TENTATIVAS = 6
+  const ATRASO_ESPERADO = 4000
+
+  let authValue = ""
+
+  beforeAll(async () => {
+    const salt = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64")
+    const derivado = await derivarChaves(SENHA, salt, MIN_KDF_ITERATIONS)
+    const vault = await criarVault(derivado.chaveEnvelope)
+    authValue = derivado.authValue
+
+    await prisma.session.deleteMany({})
+    await prisma.vaultConfig.deleteMany({})
+    await prisma.vaultConfig.create({
+      data: {
+        salt,
+        kdfIterations: MIN_KDF_ITERATIONS,
+        authHash: await hash(authValue, { memoryCost: 65536, timeCost: 3, parallelism: 4 }),
+        wrappedVaultKey: vault.wrappedVaultKey,
+        keyCheck: vault.keyCheck,
+      },
+    })
+  }, 60_000)
+
+  afterAll(async () => {
+    await prisma.$disconnect()
+  })
+
+  async function tentar(valor: string) {
+    const inicio = Date.now()
+    const res = await fetch(`${BASE}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ authValue: valor }),
+    })
+    return { status: res.status, decorrido: Date.now() - inicio }
+  }
+
+  it("quem ERRA paga o atraso acumulado", async () => {
+    await prisma.vaultConfig.update({
+      where: { id: 1 },
+      data: { failedAttempts: TENTATIVAS },
+    })
+    // base64 válido de 32 bytes, e errado: passa o guard de formato e morre no
+    // argon2id, que é exatamente o caminho que deve custar caro.
+    const errado = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64")
+
+    const r = await tentar(errado)
+    expect(r.status).toBe(401)
+    // margem de 10% para o relógio; o ponto é que os 4 s foram pagos.
+    expect(r.decorrido).toBeGreaterThanOrEqual(ATRASO_ESPERADO * 0.9)
+  }, 30_000)
+
+  it("⛔ o DONO, com a senha certa, NÃO paga o atraso do estranho", async () => {
+    await prisma.vaultConfig.update({
+      where: { id: 1 },
+      data: { failedAttempts: TENTATIVAS },
+    })
+
+    const r = await tentar(authValue)
+    expect(r.status).toBe(200)
+    // argon2id com m=65536 leva ~25 ms. 1,5 s é folga larga e ainda assim muito
+    // abaixo dos 4 s — se o atraso voltar para antes do `verify`, isto cai.
+    expect(r.decorrido).toBeLessThan(1500)
+
+    // E o contador zera no acerto, senão o próximo login herdaria a punição.
+    const cfg = await prisma.vaultConfig.findUnique({ where: { id: 1 } })
+    expect(cfg?.failedAttempts).toBe(0)
+  }, 30_000)
 })
 
 describe.skipIf(!TEM_BANCO)("cabeçalhos", () => {

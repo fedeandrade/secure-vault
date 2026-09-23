@@ -10,7 +10,7 @@ no [`README.md`](../README.md). Este documento cobre o que veio depois.
 | Frente | Estado | Bloqueio |
 |---|---|---|
 | **Zero-Knowledge no CLI/TUI** | ✅ fechado | — |
-| **Fase 1** — site deixa de expor senha | 🔶 **revisada (48/100), defeitos corrigidos, aguarda re-revisão** | falta confirmar as correções |
+| **Fase 1** — site deixa de expor senha | 🔶 **duas revisões adversariais (48/100 e 45/100), todos os achados corrigidos, aguarda a terceira** | falta uma revisão que aprove |
 | **Fase 2** — site compila | ✅ fechado | — |
 | **Fase 3** — CRUD na TUI | ⏳ não começado | — |
 | **Fase 4** — site e CLI, mesmo vault? | 🔶 metade decidida | falta o formato |
@@ -66,9 +66,11 @@ conversa — ela lê a tabela com SQL cru e procura os valores em claro:
   ok │ senha NÃO aparece em claro no banco
 ```
 
-⚠️ **O que a prova NÃO cobre: a camada HTTP.** Ela exercita cripto, schema e
-argon2id; não sobe o Next nem bate nas rotas. O `401 sem cookie` tem teste
-unitário nas guardas, não na rota inteira.
+⚠️ ~~**O que a prova NÃO cobre: a camada HTTP.**~~ **Coberta em 22/09/2026.**
+`src/app/api/rotas.test.ts` sobe o Next de verdade e bate nas rotas: 401 nas 4
+do vault, `/config` sem vazar envelope, ausência de `POST`, rejeição de origem,
+CSP, **nonce em todo `<script>` do HTML servido** e o atraso de login. Sem
+`DATABASE_URL` eles são **pulados** — o gate avisa, e pulado não é verde.
 
 ### O que foi feito
 
@@ -79,14 +81,16 @@ unitário nas guardas, não na rota inteira.
 | Blob `v1.`, versão desconhecida com mensagem própria | idem |
 | Piso `MIN_KDF_ITERATIONS` recusando abaixo de 600k | idem |
 | Sessão em banco, SHA-256 do token, cookie `__Host-` | `src/lib/session.ts` |
-| Login com ordem validar→bloqueio→semáforo→argon2id | `api/auth/login/route.ts` |
+| Login: formato→semáforo→argon2id→(se errou) atraso, fora do semáforo | `api/auth/login/route.ts` |
 | 401 nas 4 rotas do vault; limite de 64 KB no blob | `api/vault/**` |
-| Config servida sem auth; **sem `POST`** | `api/vault/config/route.ts` |
+| `wrappedVaultKey`/`keyCheck` só com sessão; **sem `POST`** | `api/vault/config/route.ts` |
 | Inicialização fora do HTTP, com piso de força de senha | `scripts/vault-init.ts` |
-| CSP, `Referrer-Policy`, `nosniff`, `frame-ancestors 'none'` | `next.config.ts` |
-| Pin de `{salt, kdfIterations}`; erro "N de M" em vez de lista vazia | `src/app/page.tsx` |
+| CSP **com nonce por requisição**; `frame-ancestors 'none'` | `src/proxy.ts` |
+| `Referrer-Policy`, `nosniff` | `next.config.ts` |
+| `await connection()` tirando `/` do prerender — sem isso não há nonce | `src/app/page.tsx` |
+| Pin de `{salt, kdfIterations}`; erro "N de M" em vez de lista vazia | `src/app/VaultApp.tsx` |
 
-**21 testes** no site (eram 0 antes de hoje).
+**37 testes** no site (eram 0 antes de hoje), dos quais 15 sobem o Next.
 
 ### Três decisões que divergem do plano, e por quê
 
@@ -116,13 +120,34 @@ unitário nas guardas, não na rota inteira.
 ### ⛔ Falta para a fase fechar
 
 - [x] ~~Subir o Postgres e rodar o fluxo de ponta a ponta.~~ **Feito** —
-      `npm run prova:e2e`, 17/17 contra PostgreSQL 18.6.
-- [ ] Teste de integração provando 401 sem cookie nas 4 rotas (hoje as
-      guardas têm teste unitário; a rota inteira, não). Precisa subir o Next.
+      `npm run prova:e2e`, 20/20 contra PostgreSQL 18.6.
+- [x] ~~Teste de integração provando 401 sem cookie nas 4 rotas.~~ **Feito** —
+      `src/app/api/rotas.test.ts` sobe o Next e mede as 4.
+- [x] ~~Revisão adversarial independente do código.~~ **Duas**, ambas REPROVA
+      (48/100 e 45/100). Os achados estão corrigidos; ver abaixo.
 - [ ] Teste provando que a senha mestra não aparece em nenhum corpo de
       requisição.
-- [ ] Revisão adversarial independente do código — a do plano revisou o
-      desenho, não a implementação.
+- [ ] **Uma terceira revisão que APROVE.** Duas seguidas acharam defeito
+      crítico — inclusive uma regressão introduzida pelo conserto da anterior.
+      Enquanto não houver revisão sem achado crítico, a fase não fecha e o
+      `web/` não sobe.
+
+### O que as duas revisões acharam, e onde cada coisa foi parar
+
+| Achado | Estado |
+|---|---|
+| CSP sem nonce bloqueava os inline do Next → site não hidratava | ✅ `src/proxy.ts` |
+| **Regressão do conserto acima:** `/` prerenderizada → HTML de produção com 9 scripts e **0 nonce** | ✅ `await connection()` + trava no gate lendo `prerender-manifest.json` |
+| Troca de senha chamava `criarVault` → sorteava vaultKey nova e **destruía o vault**, com o `keyCheck` aprovando | ✅ `reenvelopar()` + teste que decifra registro anterior à troca |
+| `/config` servia o envelope sem sessão → oráculo de quebra offline a 96 ms/palpite | ✅ só com sessão |
+| `lockedUntil` global deixava um estranho trancar o dono | ✅ coluna **removida** (migration `20260923010000`) |
+| Atraso pago **antes** do `verify`: o dono com a senha certa esperava 30 s | ✅ pago depois, e fora do semáforo. **Medido:** atacante 4086 ms, dono **98 ms** |
+| `failedAttempts` em read-modify-write contava N falhas concorrentes como 1 | ✅ `{ increment: 1 }` |
+| Soft delete sem purga em lugar nenhum | ✅ `DELETE` físico, `deletedAt` fora do schema |
+| `SESSION_SECRET` declarado como invariante e inexistente no código | ✅ `SPEC.md` 3.14 invertida |
+| `x-nonce` descrito como o que carimba o nonce (é o cabeçalho CSP) | ✅ comentário corrigido contra a doc |
+| `'unsafe-inline'` em `style-src` com comentário dizendo que não estava lá | ✅ removido — a CSP3 já o ignorava por haver nonce |
+| Servidor de teste sobrevivendo ao `afterAll` → suíte aprova código velho | ✅ `taskkill /T` e recusa de porta ocupada |
 
 ⚠️ **Medição que derrubou uma afirmação do plano:** 600k iterações de
 PBKDF2-SHA256 custam **~98 ms** nesta máquina, não "~1 s". A defesa contra
